@@ -1,0 +1,13 @@
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+
+# secrets
+deepseek_apikey
+*apikey*
+*.key
+.env
+
+# local harness config
+.claude/
