@@ -13,7 +13,7 @@ html,body{height:100%}
 body{
   margin:0;background:var(--bg);color:var(--txt);
   font:14px/1.75 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
-  overflow:hidden;
+  overflow:hidden;display:flex;flex-direction:column;
 }
 button,input{font-family:inherit}
 
@@ -47,7 +47,8 @@ button,input{font-family:inherit}
 .tag.online{border-color:var(--amber);color:var(--amber)}
 
 /* 布局 */
-#main{display:flex;height:calc(100% - 44px - 104px)}
+/* 证人席没有上限，底栏会随名字一行行长高——所以让它自己撑，画面让位。 */
+#main{display:flex;flex:1;min-height:0}
 #stage{flex:1;min-width:0;position:relative;display:flex;align-items:center;justify-content:center;padding:10px}
 #scene{width:100%;height:100%}
 #side{
@@ -101,11 +102,21 @@ button,input{font-family:inherit}
 .entry.it .src{color:var(--amber)}
 .entry.it p{color:#f0dcb4}
 .entry.gain p{color:#7fd0a8;font-size:12px}
+/* 等回话的那几秒：提示落在回答会出现的地方，不在舞台角落 */
+.entry.pend p{color:var(--amber-fade);font-size:12px;letter-spacing:.06em}
+/* 回执：每一句花掉了什么、谁封着、哪个不认。压到最轻，但一直在 */
+.entry.bill{margin-bottom:14px}
+.entry.bill p{
+  font-family:"Cascadia Mono",monospace;font-size:11px;letter-spacing:.04em;
+  color:#5d5648;border-top:1px dotted #2a2620;padding-top:5px;
+}
+.entry.deny p{color:var(--red);opacity:.85}
 .cen{background:#2a2320;color:#2a2320;padding:0 2px;border-radius:1px}
 
 /* 底栏：输入 + 已知 */
 #bottom{
-  height:104px;border-top:1px solid var(--line);background:var(--panel);
+  flex:none;min-height:104px;max-height:44vh;
+  border-top:1px solid var(--line);background:var(--panel);
   padding:11px 16px 9px;display:flex;flex-direction:column;gap:9px;
 }
 #askRow{display:flex;align-items:center;gap:8px}
@@ -130,13 +141,19 @@ button,input{font-family:inherit}
 
 /* 输入框底下那一排名字：点一下填进「问谁」。
    右边挂着已经被封口的——你正要决定问谁的时候，那正是该看见的。 */
-#castRow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:22px}
+#castRow{
+  display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  min-height:22px;overflow-y:auto;
+}
 .nchip{
   border:1px solid var(--line);padding:2px 10px;font-size:12px;cursor:pointer;
   color:var(--amber-dim);white-space:nowrap;user-select:none;
 }
 .nchip:hover{border-color:var(--amber);color:var(--amber)}
 .nchip.on{border-color:var(--amber);color:var(--amber);background:rgba(224,164,74,.10)}
+/* 它自己：唯一封不了的那张嘴，也是唯一会骗人的 */
+.nchip.itchip{border-color:var(--amber-fade);color:var(--amber)}
+.nchip.itchip:hover{border-color:var(--amber)}
 .nchip.dead{
   border-color:#3a2420;color:#6b4a42;cursor:default;
   text-decoration:line-through;text-decoration-color:var(--red);

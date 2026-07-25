@@ -28,12 +28,37 @@ var G = window.G = {
   stirLog: [],      // 它自己动过什么，喂回给它——不然它会封第三次同一张嘴
   questioned: {},   // id -> 他点名问过它几次。它自己动的时候从这里面抽人。
   askedCount: 0,    // 攒够几次点名，它就出手一次。按提问算，不按时间。
+  itSaid: 0,        // 它开过几次口（只有被点名才算）
+  itLied: 0,        // 其中有几次跟实情相反——揭晓时摊给他看
   filter: null,     // 本子上只看某一个证人
   busy: false,
   stirring: false,  // 它自己动那条线是异步的，跟他的输入互不阻塞
   ended: false,
   censored: 0,
 };
+
+/* ---------- 它自己那一票 ----------
+   它跟证人不一样：**封不了口**（它就是这个地方，它不会缺席），
+   但**它会骗人**。以前它每一句都白送一票，那票太便宜了，也太吵。
+   现在他得点名花一次才拿得到，而且拿到的有三成不是真的。
+
+   骰子由代码摇，理由跟别处一样：模型自己拿捏"该不该撒谎"，
+   要么一次都不撒，要么句句都撒。代码定频率，模型只负责把谎编圆。 */
+const IT_LIE = 0.3;
+
+/* 说话的时候它是那个地方（「有田川町」开口了）；
+   记账、点名、翻本子的时候它就是「它」——地名太长，塞不进一排名字里。 */
+const itName = () => (G.gen?.place || '它').replace(/[，,。、\s]+$/, '').slice(0, 12);
+const IT_TAG = '它';
+
+/* 他有没有在问它自己。「问谁」空着＝问它——这是最省事的写法，
+   也是他会自然而然用到的写法。 */
+function wantsIt(who){
+  if (!who) return true;
+  const p = itName();
+  return /(^|[、,，;；\s])(它|你|它自己|你自己|这地方|这里|这个地方)([、,，;；\s]|$)/.test(who)
+      || (p.length >= 2 && who.includes(p));
+}
 
 const $  = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -72,6 +97,17 @@ function typeInto(el, text){
     $('#feed').scrollTop = 1e9;
     setTimeout(step, tokens[i - 1].length > 1 ? 80 : 11);
   })();
+}
+
+/* 等回话的那几秒，得让他看见谁正在开口。
+   舞台底下那三个点太远了——他的眼睛在右边这一栏上，提示就得落在这里。 */
+function pending(text){
+  const e = document.createElement('div');
+  e.className = 'entry sys pend';
+  e.innerHTML = `<p><span class="dot"></span><span class="dot"></span><span class="dot"></span> ${escapeHtml(text)}</p>`;
+  $('#feed').appendChild(e);
+  $('#feed').scrollTop = 1e9;
+  return () => e.remove();
 }
 
 function busy(on, label){
@@ -160,11 +196,16 @@ function renderSheet(){
              `<span class="av ${d.cls}">${d.key}</span>` +
              (said ? `<span class="al">${escapeHtml(said)}</span>` : '') + `</div>`;
     }).join('');
+    /* 它只有被点名那几句才有一格。没问过它的那些句子，这一行就不该在——
+       跟证人一个待遇。 */
     const itV = row.verdicts['__it__'];
     const itD = VERDICTS[Object.keys(VERDICTS).find(k => VERDICTS[k].key === itV)] || VERDICTS.na;
     return `<div class="qblock"><div class="qh"><b>${i + 1}</b>${escapeHtml(row.claim)}</div>` +
            lines +
-           (G.filter ? '' : `<div class="ansrow it"><span class="an">它</span><span class="av ${itD.cls}">${itD.key}</span></div>`) +
+           (G.filter || !itV ? '' : `<div class="ansrow it"><span class="an">${IT_TAG}</span>` +
+             `<span class="av ${itD.cls}">${itD.key}</span>` +
+             (row.lines && row.lines['__it__'] ? `<span class="al">${escapeHtml(row.lines['__it__'])}</span>` : '') +
+             `</div>`) +
            `</div>`;
   }).join('');
 }
@@ -178,6 +219,10 @@ function renderCastRow(){
   const dead = G.cast.filter(h => G.silenced.includes(h.id));
 
   box.innerHTML =
+    /* 它自己也是一张嘴，而且是唯一封不了的那张。摆在最前面，
+       因为他随时可以回头问它——代价是它答的话有真有假。 */
+    `<span class="nchip itchip" data-n="${IT_TAG}"
+        title="${escapeHtml(itName())}　它自己。封不了口，但它会骗你。">${IT_TAG}</span>` +
     live.map(h => `<span class="nchip" data-n="${escapeHtml(h.name)}"
         title="${escapeHtml(h.stake || '')}">${escapeHtml(h.name)}</span>`).join('') +
     `<span class="nhint">点一下填进「问谁」　名单外的直接打字</span>` +
@@ -216,8 +261,16 @@ async function sayClaim(){
   if (!said || G.busy || G.ended || !G.gen) return;
 
   box.value = '';
-  say(said, 'claim', who ? `第 ${G.qi + 1} 句　问 ${who}` : `第 ${G.qi + 1} 句　没点名`);
-  busy(true, '……');
+  say(said, 'claim', who ? `第 ${G.qi + 1} 句　问 ${who}` : `第 ${G.qi + 1} 句　问它自己`);
+
+  /* 它这一票不再白送：他点了它才答，骰子也只在这时候摇。
+     点没点它由**代码**认，不由模型认——他写「它周围的空气」，模型多半会
+     顺手把 __it__ 也填上，那就等于替他花了一次他没打算花的钱。 */
+  const atIt = wantsIt(who);
+  const lie = atIt && Math.random() < IT_LIE;
+
+  const drop = pending(who ? `${who} 在想怎么答` : `${itName()} 在想怎么答`);
+  busy(true, who ? `${who}……` : '……');
 
   let r;
   try{
@@ -225,42 +278,64 @@ async function sayClaim(){
       scene: G.scene.elements, note: G.note,
       cast: G.cast, hook: G.hook, silenced: G.silenced,
       lastRun: lastRunMemory(), board: boardForPrompt(),
-      qi: G.qi + 1, trust: G.trust, granted: G.granted,
+      qi: G.qi + 1, trust: G.trust, granted: G.granted, itLie: lie,
     }, { said, who });
   }catch(err){
+    drop();
     say('（没有回应：' + err.message + '）', 'sys');
     busy(false); return;
   }
+  drop();
   busy(false);
 
   if (r.valid === false){
-    say('这句话没法回答。里面得有一件能判真假的事——问句、说法都行。\n比如「他是自杀的吗」「那扇门是从里面锁上的」「问账房，那天谁签的字」。', 'sys');
+    say('这句话没法回答。里面得有一件能判真假的事——问句、说法都行。\n比如「他是自杀的吗」「那扇门是从里面锁上的」「问账房，那天谁签的字」。', 'sys deny');
+    say(`没花你的次数（${G.askedCount}／${STIR_EVERY}）`, 'bill');
     return;
   }
 
   /* 他点名问了席上没有的——它来决定那东西存不存在。
      已经封过口的不许借新名字复活：模型认人（「那个大夫」＝「医生」），
      代码兜底（凡是已封的 id，一律不许再进证人席）。 */
-  await admitNewcomers(r.newcomers);
+  const joined = await admitNewcomers(r.newcomers);
 
   /* 换个叫法想撬开封过的口，当面驳回 */
+  const hitWall = [];
   for (const id of (r.blocked || [])){
     const h = G.cast.find(c => c.id === id);
-    if (h && G.silenced.includes(id)) say(`「${h.name}」还是不说话。`, 'sys deny');
+    if (h && G.silenced.includes(id)) hitWall.push(h.name);
   }
+
+  /* —— 谁有资格在这一轮开口 ——
+     只有他点到的，加上这一轮刚被他叫进来的。模型偶尔会让一个没被点名的
+     证人顺嘴接一句——那等于替他花钱，而且花的是他算好了要留着的额度。
+     这道闸归代码：嘴的数量是刻度，不是判断。 */
+  const allowed = new Set([...(r.addressed || []), ...joined.ids]);
+  const voices = (r.voices || []).filter(v => v && v.id && allowed.has(v.id));
 
   /* —— 这一句花掉了多少 ——
      只有**真答上话的**才计费。撞在封过的口上、或者问了个不存在的东西，
      一句话也没换来，那就不该扣他额度。 */
-  const answered = (r.voices || [])
-    .map(v => v && v.id)
-    .filter(id => id && G.cast.some(c => c.id === id) && !G.silenced.includes(id));
+  const answered = voices
+    .map(v => v.id)
+    .filter(id => G.cast.some(c => c.id === id) && !G.silenced.includes(id));
   const uniq = [...new Set(answered)];
   for (const id of uniq) G.questioned[id] = (G.questioned[id] || 0) + 1;
-  const named = (r.addressed || []).length > 0;
-  G.askedCount += uniq.length || (named ? 0 : 1);   // 没点名＝直接问它，算一次
-  if (named && !uniq.length)
-    say('你点的那几个，没一个能答上话——这一句不算数。它自己那一票你还是拿到了。', 'sys');
+
+  /* 它自己算一张嘴：点了才答，答了就收钱。它封不了自己的口，
+     但它有几成的概率在这一票上骗他——骰子是代码摇的（IT_LIE）。
+
+     「无关」＋一个字都不说，那不是回答，是它没接这一句（他写「它周围的空气」，
+     模型多半会顺手把 __it__ 也填上）。没换来东西就不收钱，跟证人一个规矩。 */
+  const itV = (atIt && ((r.addressed || []).includes('__it__') || !who))
+    ? (r.it?.verdict || '无关') : null;
+  const itIn = !!itV && (itV !== '无关' || !!(r.it?.line || '').trim());
+  G.askedCount += uniq.length + (itIn ? 1 : 0);
+
+  /* —— 回执 ——
+     每一句都要给个交代：谁答了、谁封着、哪个不认、这一句花掉几次。
+     不给回执，他分不清"没人理他"和"他问了个空"。 */
+  receipt(uniq, itIn, hitWall, joined, r);
 
   const claim = String(r.claim || said).trim() || said;
   if (claim !== said) say(claim, 'norm', '记作');
@@ -270,8 +345,7 @@ async function sayClaim(){
      那是他没花在它们身上的机会，本子上要看得出来。 */
   G.qi++;
   const verdicts = {}, lines = {};
-  for (const v of (r.voices || [])){
-    if (!v || !v.id) continue;
+  for (const v of voices){
     verdicts[v.id] = v.verdict;
     if (v.line && v.line.trim()) lines[v.id] = deId(v.line.trim());
   }
@@ -279,8 +353,15 @@ async function sayClaim(){
   for (const id of G.silenced){
     if (id in verdicts || (r.blocked || []).includes(id)){ verdicts[id] = '不能说'; delete lines[id]; }
   }
-  verdicts['__it__'] = r.it?.verdict || '无关';
-  G.board.push({ who, claim, said, verdicts, lines, truth: !!r.truth, itSaid: verdicts['__it__'] });
+  if (itIn){
+    verdicts['__it__'] = itV;
+    if (r.it?.line && r.it.line.trim()) lines['__it__'] = deId(r.it.line.trim());
+    G.itSaid++;
+    /* 揭晓时要把它骗过几次摊出来。以实情为准，不以骰子为准——
+       骰子没让它撒谎，它自己也可能撒。 */
+    if ((r.truth && itV === '不是') || (!r.truth && itV === '是')) G.itLied++;
+  }
+  G.board.push({ who, claim, said, verdicts, lines, truth: !!r.truth, itSaid: itIn ? itV : null });
   refreshSheetBtn();
   renderCastRow();
 
@@ -290,9 +371,8 @@ async function sayClaim(){
   /* —— 谁开口了 ——
      只有被点名的会答，所以一般就两三个。还是留一道闸：跟「它」唱反调的先放。 */
   const nm = Object.fromEntries(G.cast.map(c => [c.id, c.name]));
-  const itV = verdicts['__it__'];
-  const spoke = (r.voices || [])
-    .filter(v => v?.line && v.line.trim() && nm[v.id] && !G.silenced.includes(v.id))
+  const spoke = voices
+    .filter(v => v.line && v.line.trim() && nm[v.id] && !G.silenced.includes(v.id))
     .sort((a, b) => (a.verdict === itV) - (b.verdict === itV))
     .slice(0, 3);
   for (const v of spoke){
@@ -301,11 +381,12 @@ async function sayClaim(){
     G.censored += c.count;
     say(c.html, 'obj', nm[v.id]);
   }
-  if (r.it?.line && r.it.line.trim()){
+  /* 它只在被点到的时候开口——不然它就是白送他一票 */
+  if (itIn && r.it?.line && r.it.line.trim()){
     await sleep(380);
     const c = LLM.censor(deId(r.it.line));
     G.censored += c.count;
-    say(c.html, 'it', (G.gen.place || '').slice(0, 12));
+    say(c.html, 'it', itName());
     flick();
   }
 
@@ -330,30 +411,58 @@ async function sayClaim(){
   maybeStir();
 }
 
-/* 他点名问了一个不在席上的东西。存不存在，它说了算——它也可以撒谎。 */
+/* 他点名问了一个不在席上的东西。存不存在，它说了算——它也可以撒谎。
+   返回这一轮真进来的那几个名字，回执里要点到。 */
 async function admitNewcomers(list){
+  const got = [], no = [], ids = [];
   for (const n of (list || [])){
     if (!n || !n.name) continue;
     if (!n.exists){
+      no.push(n.name);
       await sleep(200);
-      say(n.line || `没有这么个东西。`, 'sys');
+      say(n.line || `没有这么个东西。`, 'sys deny');
       continue;
     }
     const id = String(n.id || '').trim() || ('x' + G.cast.length);
     if (G.cast.some(h => h.id === id)) continue;
     /* 代码兜底：封过的口不许换个名字重新开张。模型认人失手也拦得住。 */
     if (G.silenced.some(sid => sid === id)) continue;
-    /* 也兜一道上限：合理性由它判，但判漏了也不能让证人席无限膨胀 */
-    if (G.cast.length >= 9){ say('这一局的人已经够多了。', 'sys'); continue; }
+    /* 不设人数上限。想出一个故事里真有位置的新证人，是这一局最难的动作，
+       没有理由因为"人够多了"就把它挡回去。膨胀由合理性那道关拦，不由计数拦。 */
     G.cast.push({
       id, name: n.name, what: n.what || '物', stake: n.stake || '',
       look: n.look || '', mind: n.mind || '', toward: n.toward || '不在乎',
       slip: n.slip || '', found: true,
     });
+    got.push(n.name); ids.push(id);
     await sleep(200);
     say(`${n.name}　${n.what || ''}　${n.stake || ''}`, 'joined', '进了证人席');
     refreshSheetBtn(); renderCastRow();
   }
+  return { got, no, ids };
+}
+
+/* ---------- 每一句都给一张回执 ----------
+   他按下"问"之后必须当场知道三件事：谁真答了、谁封着、哪个不认。
+   这三件里少任何一件，他都会把"它在躲"错读成"游戏卡住了"。 */
+function receipt(uniq, itIn, hitWall, joined, r){
+  const nm = Object.fromEntries(G.cast.map(c => [c.id, c.name]));
+  const parts = [];
+  const answered = uniq.map(id => nm[id]).filter(Boolean);
+  if (itIn) answered.push(IT_TAG);
+  if (answered.length) parts.push(`答了：${answered.join('、')}`);
+  if (hitWall.length)  parts.push(`封着：${hitWall.join('、')}（问不出话）`);
+  if (joined.no.length) parts.push(`不认：${joined.no.join('、')}`);
+  if (joined.got.length) parts.push(`新进席：${joined.got.join('、')}`);
+
+  const cost = uniq.length + (itIn ? 1 : 0);
+  parts.push(cost ? `花掉 ${cost} 次（${G.askedCount}／${STIR_EVERY}）`
+                  : '一次都没花——没换来一句话的，不收你的');
+
+  if (!answered.length && !hitWall.length && !joined.no.length)
+    say('你点的那几个，它一个都没认。换个说法，或者换个人。', 'sys deny');
+
+  say(parts.join('　｜　'), 'bill');
 }
 
 /* 给模型看的账：他问过什么、花在了谁身上、当时谁怎么答的 */
@@ -404,7 +513,10 @@ async function maybeGrant(){
    它每次都精准掐掉最要命的那一个，玩家会觉得被针对；代码随机挑，
    丢掉的是他自己押注最重的那几张嘴之一——同样疼，但公平。 */
 
-const STIR_EVERY = 4;    // 累计点名到这个数，它出手一次
+/* 一句话问三个人就是三次，额度掉得比想象中快——所以这个数要给得松，
+   松到他敢一次点四五个名去比对口供。卡得紧，他就只敢一个一个问，
+   那正好把"一次问多个"这件事废掉了。 */
+const STIR_EVERY = 10;   // 累计点名到这个数，它出手一次
 const KEEP_ALIVE = 3;    // 手上至少给他留这么多张嘴
 
 /* 只从他点名问过的里面挑，权重＝问过的次数：他越指望谁，越可能丢谁 */
@@ -580,8 +692,6 @@ function reveal(pass, v, hit){
   $('#endTitle').textContent = pass ? '你把它说通了' : '你没说通';
   saveRunMemory(pass);
 
-  const lies = G.board.filter(r =>
-    (r.truth && r.itSaid === '不是') || (!r.truth && r.itSaid === '是')).length;
   const trues = G.board.filter(r => r.truth).length;
 
   $('#endBody').innerHTML = `
@@ -606,7 +716,9 @@ function reveal(pass, v, hit){
       </div>`).join('')}</div>
 
     ${G.board.length ? `<div class="reveal"><div class="rl">你问了 ${G.board.length} 句</div>
-      <div class="rt">其中 ${trues} 句是真的。它当着你的面否认了 ${lies} 次。</div></div>` : ''}
+      <div class="rt">其中 ${trues} 句是真的。${G.itSaid
+        ? `你花了 ${G.itSaid} 次去问它自己——它当着你的面骗了你 ${G.itLied} 次。`
+        : '你一次都没问过它自己。'}</div></div>` : ''}
 
     <div class="reveal"><div class="rl">${G.granted ? '你让它松了口，它给你看的那件事' : '它本来愿意让你看的那件事——你没能让它开口'}</div>
       <div class="rt">${escapeHtml(G.gen.concession)}</div></div>
@@ -684,6 +796,7 @@ async function newRun(){
     board:[], qi:0, riddles:[], answers:{}, attempts:0,
     note:'', history:[], trust:0, granted:false, stirs:0, stirLog:[],
     questioned:{}, askedCount:0, filter:null, ended:false, censored:0,
+    itSaid:0, itLied:0,
   });
   $('#feed').innerHTML = '';
   $('#scene').innerHTML = '';
@@ -745,9 +858,12 @@ async function newRun(){
   await sleep(600);
   if (G.hook.length) say(G.hook.join(''), 'hookline', '它讲了这么一件事');
   await sleep(400);
-  say('说一句话，**点名要谁回答**：「问账房和遗孀，那天谁签的字」。\n只有你点到的会答 是／不是／无关，或者答不上来——每一句都得决定花在谁身上。\n\n' +
+  say('说一句话，**点名要谁回答**：「问账房和遗孀，那天谁签的字」。\n只有你点到的会答 是／不是／无关，或者答不上来——点几个算几次，' +
+      '每一句都得决定花在谁身上。\n\n' +
       '起手就这' + G.cast.length + '个：' + G.cast.map(h => h.name).join('、') +
       '。剩下的人得你自己问出来——「问那个当晚值夜的」，它会告诉你有没有这个人。\n\n' +
+      '还有它自己：「问谁」空着就是在问它。它封不了自己的口，你随时问得到——' +
+      '但它答的话里有真有假。\n\n' +
       '它们互相不合，谁都可能骗你。你点名问得越多，它越可能掐掉其中一张嘴。', 'sys');
   $('#cmd').disabled = $('#who').disabled = false;
   renderCastRow();

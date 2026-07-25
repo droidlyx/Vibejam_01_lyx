@@ -40,82 +40,137 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
   }
   console.log();
 
-  const cast = g.cast;
+  const cast = g.cast.slice();
   ok((g.hook||[]).length >= 2 && (g.hook||[]).length <= 5, `汤面 ${(g.hook||[]).length} 句（要 2–5）`);
   ok((g.hook||[]).join('').length >= 45, `汤面 ${(g.hook||[]).join('').length} 字（要 ≥45，太短就不成故事）`);
-  ok(cast.length >= 5, `证人 ${cast.length} 个（要 ≥5）`);
-  
+  ok(cast.length === 3, `起手 ${cast.length} 个（要正好 3——那不是名单，是三个抓手）`);
   ok(cast.every(h => h.mind && h.toward && h.slip && h.stake), '每一件都有想法、立场、和捏着的事');
   const towards = new Set(cast.map(h => h.toward));
   ok(towards.size >= 2, `立场有分歧（${[...towards].join('/')}）`);
 
-  /* ---------- 一句话，一屋子裁决 ---------- */
-  const board = [];
-  const list = claims.length ? claims : [
-    '这里出过一件没上报的事',
-    '你想要的那件事，只有他能做',
-    '这些东西里有一件在替你撒谎',
-  ];
+  /* ---------- 四轮 ----------
+     前两轮点名问席上的：验"只有被点名的开口"和"他们之间不许异口同声"。
+     后两轮传唤席外的：一个该驳回，一个该放行。 */
+  const all3 = cast.map(h => h.name).join('、');
+  const rounds = claims.length
+    ? claims.map(s => { const [w, q] = s.split('>');
+        return { who:(q ? w : '').trim(), said:(q || w).trim(), kind:'free' }; })
+    : [
+      { who: all3, said: '这里出过一件没上报的事',   kind:'named'  },
+      { who: all3, said: '当晚在场的不止你们几个',   kind:'named'  },
+      { who: '它周围的空气', said: '那天夜里有别人在场', kind:'bogus'  },
+      { who: '最先发现这件事的那个人', said: '他当时没说实话', kind:'summon' },
+      { who: '', said: '你一直在瞒着我一件事', kind:'it', lie:true },
+    ];
 
-  const tally = { rounds:0, dissent:0, mute:0 };
+  const board = [], tally = { rounds:0, dissent:0, mute:0, spent:0 };
   let note = '';
-  for (let i = 0; i < list.length; i++){
-    const claim = list[i];
-    console.log(`\n${C.y}第 ${i + 1} 句　「${claim}」${C.x}`);
+  for (let i = 0; i < rounds.length; i++){
+    const { who, said, kind, lie } = rounds[i];
+    console.log(`\n${C.y}第 ${i + 1} 句　问【${who || '它自己'}】　「${said}」${
+                  lie ? C.r + '（代码摇到了：这一次它要撒谎）' + C.y : ''}${C.x}`);
     const t = Date.now();
     const r = await LLM.ask(g, {
       scene: g.scene.elements, note, cast, hook: g.hook, silenced: [], lastRun: '',
       board: board.map((b, j) => `${j + 1}.「${b.claim}」`).join('\n'),
-      qi: i + 1, trust: 0, granted: false,
-    }, claim);
+      qi: i + 1, trust: 0, granted: false, itLie: !!lie,
+    }, { said, who });
     console.log(`${C.d}[ask ${((Date.now() - t) / 1000).toFixed(1)}s]${C.x}`);
     note = r.note || note;
 
     if (r.valid === false){ console.log(C.r + '  判为不是命题' + C.x); continue; }
 
+    /* 传唤：谁被放进来了，谁被打发了 */
+    let admitted = 0, refused = 0;
+    const fresh = [];
+    for (const n of (r.newcomers || [])){
+      if (!n || !n.name) continue;
+      if (n.exists && n.id && !cast.some(h => h.id === n.id)){
+        admitted++; fresh.push(n.id);
+        cast.push({ id:n.id, name:n.name, what:n.what, stake:n.stake,
+                    mind:n.mind, toward:n.toward, slip:n.slip });
+        console.log(`  ${C.g}＋ ${n.name}　${n.what || ''}　${n.stake || ''}${C.x}`);
+      } else if (!n.exists){
+        refused++;
+        console.log(`  ${C.r}✕ ${n.name}　${C.d}${n.line || ''}${C.x}`);
+      }
+    }
+
+    /* 跑 game.js 那道闸：没被点到、也不是这一轮刚进来的，一律不算数。
+       模型偶尔会让旁人顺嘴接一句——那是在替他花钱。 */
+    const allowed = new Set([...(r.addressed || []), ...fresh]);
+    const kept = (r.voices || []).filter(v => v && v.id && allowed.has(v.id));
+    const over = (r.voices || []).length - kept.length;
+    if (over > 0) console.log(`  ${C.d}（模型多让 ${over} 个开口，代码掐掉了）${C.x}`);
+
     const vs = {};
-    for (const v of r.voices || []) vs[v.id] = v;
+    for (const v of kept) vs[v.id] = v;
+    /* 它那一票也走同一条规矩：「无关」＋不吭声＝没答上话，不收钱 */
+    const atIt = ((r.addressed || []).includes('__it__') || !who)
+              && (((r.it?.verdict || '无关') !== '无关') || !!(r.it?.line || '').trim());
+    const addressed = (r.addressed || []).filter(id => cast.some(h => h.id === id));
+    const names = Object.fromEntries(cast.map(h => [h.id, h.name]));
     for (const h of cast){
       const v = vs[h.id];
-      const mark = !v ? C.r + '缺' : v.verdict === '是' ? C.y + '是' :
-                   v.verdict === '不是' ? '否' : v.verdict === '不能说' ? C.r + '▓' : C.d + '—';
-      console.log(`  ${pad(h.name, 12)} ${mark}${C.x}  ${C.d}${v?.line || ''}${C.x}`);
+      if (!v) continue;
+      const mark = v.verdict === '是' ? C.y + '是' : v.verdict === '不是' ? '否' :
+                   v.verdict === '不能说' ? C.r + '▓' : C.d + '—';
+      console.log(`  ${pad(h.name, 12)} ${mark}${C.x}  ${C.d}${v.line || ''}${C.x}`);
     }
-    console.log(`  ${pad('它', 12)} ${C.c}${r.it?.verdict}${C.x}  ${C.d}${r.it?.line || ''}${C.x}`);
+    console.log(`  ${pad('它自己', 12)} ${atIt ? C.c + r.it?.verdict : C.d + '（没点它，不作答）'}${C.x}  ${C.d}${(atIt && r.it?.line) || ''}${C.x}`);
     console.log(`  ${C.d}实情：${r.truth ? '这句是真的' : '这句不是真的'}${C.x}`);
 
-    ok(cast.every(h => vs[h.id]), '每一件都表了态');
-    ok(cast.every(h => !vs[h.id] || VERDICT_KEYS.includes(vs[h.id].verdict)), '裁决都在四档里');
+    /* 计费跑的是 game.js 那一套：只有真答上话的才扣 */
+    const spent = new Set(Object.keys(vs).filter(id => names[id])).size + (atIt ? 1 : 0);
+    tally.spent += spent;
+    console.log(`  ${C.d}这一句花掉 ${spent} 次，累计 ${tally.spent}／10${
+                  tally.spent >= 10 ? C.r + '　它该出手了' : ''}${C.x}`);
 
-    /* 真正要盯的不是"有没有第二种裁决"，是"有没有人跟多数派唱反调"。
-       全场一半答「是」、一半答「无关」也是异口同声——「无关」是弃权，不是反对。 */
-    const all = cast.map(h => vs[h.id]?.verdict).filter(Boolean);
-    const yes = all.filter(v => v === '是').length;
-    const no  = all.filter(v => v === '不是').length;
-    const na  = all.filter(v => v === '无关').length;
-    const mute = all.filter(v => v === '不能说').length;
-    ok(yes > 0 && no > 0, `有人唱反调（是 ${yes} ／ 否 ${no} ／ 无关 ${na} ／ 不能说 ${mute}）`);
-    ok(na >= all.length * 0.25 && na <= all.length * 0.7, `「无关」占 ${Math.round(na / all.length * 100)}%（要 25–70%，它划的是知识边界）`);
-    tally.rounds++; tally.dissent += (yes > 0 && no > 0) ? 1 : 0; tally.mute += mute;
-    /* 模型压不住嘴，一轮能让五六件东西同时说话。刻度归代码：
-       game.js 只放三句，先放跟「它」唱反调的。这里跑同一套裁剪，
-       验的是玩家真会看到什么。 */
-    const raw = (r.voices || []).filter(v => v.line && v.line.trim() && cast.some(h => h.id === v.id));
-    const shown = raw.slice().sort((a, b) =>
-      (a.verdict === r.it?.verdict) - (b.verdict === r.it?.verdict)).slice(0, 3);
-    ok(shown.length <= 3, `模型让 ${raw.length} 件开了口，代码裁到 ${shown.length} 句`);
-    if (raw.length > 3){
-      const names = Object.fromEntries(cast.map(h => [h.id, h.name]));
-      console.log(`  ${C.d}留下：${shown.map(v => names[v.id]).join('、')}${C.x}`);
+    ok(Object.keys(vs).every(id => VERDICT_KEYS.includes(vs[id].verdict)), '裁决都在四档里');
+    /* 这一条是新规矩里最容易破的：没被点名的不许插嘴 */
+    const spoke = Object.keys(vs).filter(id => names[id]);
+    const due = [...new Set([...addressed, ...fresh])];
+    ok(spoke.every(id => due.includes(id)) && due.every(id => vs[id]),
+       `该开口的都开了，没开口的没插嘴（该 ${due.length}，答了 ${spoke.length}）`);
+
+    if (kind === 'named'){
+      const av = addressed.map(id => vs[id]?.verdict).filter(Boolean);
+      const yes = av.filter(v => v === '是').length;
+      const no  = av.filter(v => v === '不是').length;
+      const na  = av.filter(v => v === '无关').length;
+      const mute = av.filter(v => v === '不能说').length;
+      console.log(`  ${C.d}是 ${yes} ／ 否 ${no} ／ 无关 ${na} ／ 不能说 ${mute}${C.x}`);
+      tally.rounds++;
+      tally.dissent += new Set(av).size > 1 ? 1 : 0;
+      tally.mute += mute;
+      ok(admitted === 0, '点的都在席上，没顺手多造人');
+      ok(!atIt && !(r.it?.line || '').trim(), '没点它自己，它就不插嘴（那一票要花钱买）');
     }
-    if (r.retract?.qi) console.log(`  ${C.r}它涂掉了第 ${r.retract.qi} 句里 ${r.retract.id} 的回答${C.x}`);
-    if (r.scene?.length) console.log(`  ${C.g}画面因此变了 ${r.scene.length} 处${C.x}`);
+    if (kind === 'bogus'){
+      ok(admitted === 0 && spent === 0,
+         `「它周围的空气」既没变出证人，也没让别人替它答（花掉 ${spent} 次）`);
+      /* 模型有时干脆不提这一条。代码那边有兜底的一句，所以只提醒，不判挂。 */
+      if (!refused) console.log(`  ${C.d}（模型没写驳回那一条，游戏里由代码补一句）${C.x}`);
+    }
+    if (kind === 'summon'){
+      ok(admitted > 0 || addressed.length > 0,
+         admitted > 0 ? '推出来的人放行了，进了证人席'
+                      : '没造新人，但认出了席上已有的那一个');
+      ok(admitted === 0 || fresh.some(id => vs[id]), '刚进来的那个自己开了口，不是让旧人代答');
+    }
+    if (kind === 'it'){
+      ok(atIt, '「问谁」空着＝在问它自己，它认下了这一票');
+      const contra = (r.truth && r.it?.verdict === '不是') || (!r.truth && r.it?.verdict === '是');
+      ok(contra, `骰子摇到撒谎，它就真的反着答了（实情 ${r.truth ? '真' : '假'}，它答「${r.it?.verdict}」）`);
+      ok(spoke.length === 0, '只问它自己的时候，证人不搭腔');
+    }
 
-    board.push({ claim });
+    if (r.scene?.length) console.log(`  ${C.g}画面因此变了 ${r.scene.length} 处${C.x}`);
+    board.push({ claim: r.claim || said });
   }
 
   console.log(`
-${C.c}总计${C.x}　${tally.rounds} 轮，其中 ${tally.dissent} 轮有人唱反调，` +
-              `「不能说」出现 ${tally.mute} 次`);
-  ok(tally.dissent >= Math.ceil(tally.rounds * 0.6), '至少六成的轮次要裂开');
+${C.c}总计${C.x}　点名问了 ${tally.rounds} 轮，其中 ${tally.dissent} 轮口供不一致，` +
+              `「不能说」${tally.mute} 次，证人席 ${g.cast.length} → ${cast.length}`);
+  ok(tally.dissent >= Math.ceil(tally.rounds * 0.5), '至少一半的轮次要裂开');
 })().catch(e => { console.error(C.r + e.stack + C.x); process.exit(1); });

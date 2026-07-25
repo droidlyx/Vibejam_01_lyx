@@ -43,7 +43,7 @@
   <div id="askRow">
     <span class="fl">问谁</span>
     <input id="who" type="text" autocomplete="off" spellcheck="false"
-           placeholder="留空＝只问它自己　可以写好几个" disabled>
+           placeholder="留空＝问它自己　可以写好几个，一个算一次" disabled>
     <span class="fl">问什么</span>
     <input id="cmd" type="text" autocomplete="off" spellcheck="false"
            placeholder="一句话——问句、说法、猜测都行" disabled>
@@ -74,8 +74,8 @@
     <p class="note">这几道题的答案，它在开局之前就写好封存了。<br>
       <b>全部答对才算过。</b>不会告诉你对了几道，只给一句它听完之后的反应。</p>
     <div id="showList"></div>
-    <p class="note dim">没全对不结束这一局——它会把注意力收回去一阵子（60 秒起，逐次递增），
-      这段时间照常接着问。你填的答案留着，下次直接改。</p>
+    <p class="note dim">没全对不结束这一局，但摊一次牌要花掉你三次提问的额度——
+      它会因此往前挪一步。你填的答案留着，下次直接改。</p>
     <div class="modalFoot">
       <button class="tbtn hl" id="showGo">说完了</button>
       <span style="display:flex;gap:8px">
