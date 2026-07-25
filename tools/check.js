@@ -1,39 +1,50 @@
-/* 数据一致性校验：node tools/check.js
-   保证 fixed/free 引用的 fact 都存在、free 输出白名单自洽、结论选项下标合法。 */
-const fs = require('fs');
-const path = require('path');
-const src = fs.readFileSync(path.join(__dirname, '..', 'data.js'), 'utf8');
-const sandbox = {};
-new Function('g', src + '\ng.FACTS=FACTS;g.OBJECTS=OBJECTS;g.QUESTIONS=QUESTIONS;g.OFFLINE=OFFLINE;g.TRUTH=TRUTH;')(sandbox);
-const { FACTS, OBJECTS, QUESTIONS, OFFLINE } = sandbox;
+/* JSON 修复单元测试： node tools/check.js
+   模型手滑的每一种花样，都要能救回来——玩家不该为它的手滑买单。 */
+const fs = require('fs'), path = require('path');
+const src = fs.readFileSync(path.join(__dirname, '..', 'llm.js'), 'utf8');
 
-const errs = [];
-for (const [id, o] of Object.entries(OBJECTS)) {
-  for (const a of o.actions) {
-    for (const f of a.reveals || []) if (!FACTS[f]) errs.push(`${id} 动作「${a.verb}」引用了不存在的 fact: ${f}`);
-    if (a.requires && !FACTS[a.requires]) errs.push(`${id} requires 不存在: ${a.requires}`);
-    if (!a.text && !a.textFn) errs.push(`${id} 动作「${a.verb}」既无 text 也无 textFn`);
+/* parseLoose 关在 LLM 的闭包里，这里把那一段源码单独取出来跑 */
+const start = src.indexOf('  /* 模型偶尔会吐出不合法的 JSON');
+const end   = src.indexOf('  /* 生成失败就重来');
+if (start < 0 || end < 0) { console.error('没在 llm.js 里找到 parseLoose 那一段'); process.exit(1); }
+const parseLoose = new Function(src.slice(start, end) + '\nreturn parseLoose;')();
+
+const C = { g:'\x1b[32m', r:'\x1b[31m', d:'\x1b[2m', x:'\x1b[0m' };
+const NL = String.fromCharCode(10);
+let pass = 0, fail = 0;
+
+function t(name, raw, check){
+  try{
+    const o = parseLoose(raw);
+    if (check && !check(o)) throw new Error('解析出来了但内容不对：' + JSON.stringify(o).slice(0, 90));
+    console.log(`${C.g}  ✓${C.x} ${name}`); pass++;
+  }catch(e){
+    console.log(`${C.r}  ✗${C.x} ${name}　${C.d}${e.message.slice(0, 110)}${C.x}`); fail++;
   }
-  for (const f of o.free.allowFacts) if (!FACTS[f]) errs.push(`${id} allowFacts 含不存在的 fact: ${f}`);
-  if (!o.free.truth) errs.push(`${id} 缺少 free.truth`);
 }
-for (const k of Object.keys(OFFLINE.freeKnown)) {
-  const [c, ob] = k.split('->');
-  if (!FACTS[c]) { errs.push(`离线组合 ${k} 的线索不存在`); continue; }
-  if (!OBJECTS[ob]) { errs.push(`离线组合 ${k} 的物件不存在`); continue; }
-  for (const f of OFFLINE.freeKnown[k].reveals)
-    if (!OBJECTS[ob].free.allowFacts.includes(f)) errs.push(`离线组合 ${k} 泄漏了白名单外的 fact: ${f}`);
-}
-QUESTIONS.forEach(q => { if (!q.options[q.answer]) errs.push(`${q.id} 正确答案下标越界`); });
 
-// 可解性：只用 fixed 交互，能否推出三条非封印结论所需的证据？
-const reachable = new Set();
-for (const o of Object.values(OBJECTS)) for (const a of o.actions) (a.reveals || []).forEach(f => reachable.add(f));
-['fact_it_watches'].forEach(f => reachable.add(f)); // 由开门序列给出
-const needed = ['fact_seismic', 'fact_han', 'fact_41days', 'fact_uninterrupted', 'fact_three_circuits'];
-const missing = needed.filter(f => !reachable.has(f));
-if (missing.length) errs.push(`仅靠固定交互无法获得关键证据: ${missing.join(', ')}`);
+t('干净的 JSON',            '{"a":1,"b":"x"}',                        o => o.a === 1);
+t('尾逗号',                 '{"a":1,"b":"x",}',                       o => o.b === 'x');
+t('数组尾逗号',             '{"a":[1,2,],}',                          o => o.a.length === 2);
+t('字符串里夹裸换行',       '{"a":"上一行' + NL + '下一行"}',          o => o.a.includes(NL));
+t('被截断',                 '{"a":"x","b":[{"c":1}',                  o => o.a === 'x');
+t('被截断在字符串里',       '{"a":"x","b":"没写完',                    o => o.a === 'x');
 
-console.log(errs.length ? '✗ ' + errs.join('\n✗ ') : '✓ 数据一致性校验通过');
-console.log(`物件 ${Object.keys(OBJECTS).length} ｜ 线索 ${Object.keys(FACTS).length} ｜ 结论 ${QUESTIONS.length} ｜ 固定交互可达事实 ${reachable.size}`);
-process.exit(errs.length ? 1 : 0);
+/* 这一批是跑 turtle 探针时真实撞上的：值忘了加引号 */
+t('枚举值裸奔',             '{"moved": slight, "hostile": false}',    o => o.moved === 'slight');
+t('中文值裸奔',             '{"note": 他猜到了，方向对了。, "moved": "none"}',
+                                                                      o => o.note.startsWith('他猜到'));
+t('裸值在末尾',             '{"a":"x","note": 就这样}',                o => o.note === '就这样');
+t('裸值里带换行',           '{"note": 第一行' + NL + '第二行, "a":1}', o => o.a === 1 && o.note.includes('第二行'));
+t('true/false/null 不要动', '{"a":true,"b":false,"c":null}',          o => o.a === true && o.c === null);
+t('负数和小数不要动',       '{"a":-1,"b":2.5}',                       o => o.a === -1 && o.b === 2.5);
+t('字符串里的冒号不要动',   '{"a":"时间 12:30","b":1}',                o => o.a === '时间 12:30');
+t('字符串里的中文引号',     '{"a":"他说「不」","b":1}',                 o => o.a.includes('「'));
+t('嵌套对象里的裸值',       '{"it":{"verdict": 无关,"line":""},"a":1}', o => o.it.verdict === '无关');
+t('数组里的裸值',           '{"v":[{"id":"x","verdict": 是}],"a":1}',  o => o.v[0].verdict === '是');
+t('几样一起犯',
+  '{"a":[1,2,],"note": 他说：好' + NL + '然后走了, "moved": met,}',
+  o => o.moved === 'met' && o.note.includes('然后走了'));
+
+console.log(`${NL}${fail ? C.r : C.g}${pass} 过 / ${fail} 挂${C.x}`);
+process.exit(fail ? 1 : 0);

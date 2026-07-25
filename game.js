@@ -13,6 +13,11 @@ var G = window.G = {
   sealed: null,     // 封存的 intent —— 只在结算时才读
   scene: { elements: [] },
   hotspots: {},
+  cast: [],         // 场上有想法的东西，按顺序。表的列就是它们。
+  board: [],        // 真值表。每一行 = 他说过的一句话 + 全场的裁决
+  qi: 0,            // 他说到第几句了
+  ledger: [],       // 代码记的流水账。见证者的裁决只能依据它——它没有编造的余地。
+  sinceStir: 0,
   history: [],
   note: '',
   acts: [],         // 它做过的事，给玩家看的流水
@@ -26,9 +31,44 @@ var G = window.G = {
   lastAct: 0,       // 玩家上一次有动作的时间戳
   focus: null,
   busy: false,
+  stirLog: [],      // 它自己动过什么，喂回给它——不然它会推第三次同一扇门
+  stirring: false,  // 它自己动那条线是异步的，跟他的输入互不阻塞
   ended: false,
   censored: 0,
 };
+
+/* 代码记账。这份记录是见证者唯一的依据——它答话时代码把这个原样喂给模型，
+   所以它没有编造的余地。它就是这本账本，站在场上。 */
+function ledger(text){
+  G.ledger.push(text);
+  if (G.ledger.length > 40) G.ledger.shift();
+}
+
+/* 它偶尔会把图元的英文 id 直接写进叙述里（"那盏叫 __witness__ 的灯"）。
+   提示词里嘱咐过了，但嘱咐不如换掉——凡是 id 一律换成玩家看得懂的名字。 */
+function deId(text){
+  let s = String(text || '');
+  for (const h of G.cast){
+    if (!h.id || h.id.length < 3) continue;
+    s = s.split(h.id).join(h.name);
+  }
+  return s;
+}
+
+/* 见证者不归它管。它的图元代码不许它碰——它想熄掉那盏灯、想把它挪走、
+   想让它消失，一律拦下。第一次拦的时候当着玩家的面说出来。 */
+let denied = false;
+function guardWitness(patch){
+  const bad = (patch || []).filter(p => p && p.id === WITNESS_ID);
+  if (!bad.length) return patch || [];
+  if (!denied){
+    denied = true;
+    const nm = G.hotspots[WITNESS_ID]?.name || '那件东西';
+    say(`它伸手去动「${nm}」了。动不了——那一件不归它管。`, 'sys deny');
+    ledger(`它想动「${nm}」，没动成`);
+  }
+  return (patch || []).filter(p => p && p.id !== WITNESS_ID);
+}
 
 const $  = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -88,16 +128,18 @@ function drawScene(){
   }
 }
 
-/* 观察：零延迟，读的是开局就写好的文本 */
+/* 观察：零延迟，读的是开局就写好的文本。
+   看不是目的——看是为了想出一句可以拿去问的话。 */
 function observe(id){
   const h = G.hotspots[id];
   if (!h) return;
   G.focus = id;
-  $('#objName').textContent = h.name;
+  $('#objName').textContent = h.name + (h.witness ? '　（它不归它管）' : '');
   $('#focusTag').classList.remove('hidden');
   $('#focusTag').textContent = '◉ ' + h.name + ' ×';
-  say(h.look);
+  say(h.look, '', '看 ' + h.name);
   G.history.push('看了 ' + h.name);
+  ledger(`他走到「${h.name}」跟前看了一会儿`);
   drawScene();
   touch();
   if (!G.ended) $('#cmd').focus();
@@ -192,7 +234,7 @@ function scheduleStir(){
   clearTimeout(idleTimer);
   if (G.ended || !G.gen || !LLM.online()) return;
   const wait = IDLE_STEPS[Math.min(G.stirs, IDLE_STEPS.length - 1)];
-  idleTimer = setTimeout(doStir, wait);
+  idleTimer = setTimeout(() => doStir({ idle:true }), wait);
 }
 
 function touch(){                              // 玩家有动作了，重排下一次
@@ -201,33 +243,37 @@ function touch(){                              // 玩家有动作了，重排下
   scheduleStir();
 }
 
-async function doStir(){
-  if (G.busy || G.ended || !G.gen) { scheduleStir(); return; }
-  const idleSec = Math.round((Date.now() - G.lastAct) / 1000);
-
-  G.busy = true;
-  $('#thinking').classList.remove('hidden');
-  $('#thinking').innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span> ';
+/* 它自己动。**不占用他的输入**——他往前查一步，它就往前推一步，
+   两条线同时走。所以这里不碰 G.busy，只在角落点一盏灯。 */
+async function doStir(opts){
+  if (G.stirring || G.ended || !G.gen) { scheduleStir(); return; }
+  G.stirring = true;
+  $('#itMoving').classList.remove('hidden');
 
   let r;
   try{
     r = await LLM.stir(G.gen, {
-      scene: G.scene.elements, note: G.note, history: G.history,
-      trust: G.trust, granted: G.granted, stirs: G.stirs, idleSec,
+      scene: G.scene.elements, note: G.note, board: boardForPrompt(),
+      trust: G.trust, granted: G.granted, stirs: G.stirs, stirLog: G.stirLog,
+      idleSec: opts?.idle ? Math.round((Date.now() - G.lastAct) / 1000) : null,
     });
   }catch(err){
     console.warn('[stir] 失败', err.message);
-    G.busy = false; $('#thinking').classList.add('hidden'); scheduleStir(); return;
+    G.stirring = false; $('#itMoving').classList.add('hidden'); scheduleStir(); return;
   }
-  G.busy = false;
-  $('#thinking').classList.add('hidden');
-  $('#cmd').disabled = G.ended;
+  G.stirring = false;
+  $('#itMoving').classList.add('hidden');
+  if (G.ended) return;
 
   G.stirs++;
+  G.stirLog.push(deId(r.narration).slice(0, 60));
+  if (G.stirLog.length > 4) G.stirLog.shift();
   G.note = r.note || G.note;
-  say(r.narration, 'stir');
-  G.history.push(`（没人碰它，它自己动了：${r.narration.slice(0, 30)}）`);
+  say(deId(r.narration), 'stir');
+  G.history.push(`（它自己动了：${r.narration.slice(0, 30)}）`);
+  ledger('它自己动了：' + deId(r.narration).slice(0, 34));
 
+  r.scene = guardWitness(r.scene);
   if (r.scene?.length){
     Render.patch(G.scene, r.scene);
     drawScene();
@@ -239,59 +285,140 @@ async function doStir(){
     G.censored += c.count;
     say(c.html, 'it', G.gen.place.slice(0, 12));
   }
-  $('#crt').classList.add('flicker');
-  setTimeout(() => $('#crt').classList.remove('flicker'), 700);
-
+  flick();
   scheduleStir();
 }
 
-/* ================= 行动 ================= */
+/* ================= 真值表 =================
+   行 = 他说过的一句话，列 = 场上一件东西。
+   格子里是那件东西对那句话的裁决。
+   这张表是他推理的骨架，也是他唯一能看见的"信息增量"。 */
 
-async function submit(){
+function renderBoard(){
+  const wrap = $('#board');
+  if (!G.board.length){
+    wrap.innerHTML = '<div class="bempty">你说的每一句话都会记在这里，<br>' +
+      '连同场上每一件东西当时的回答。<br><br>' +
+      '<span class="v-yes">是</span>　<span class="v-no">否</span>　' +
+      '<span class="v-na">—</span> 与我无关　<span class="v-mute">▓</span> 答不上来</div>';
+    return;
+  }
+
+  const cols = [...G.cast, { id:'__it__', name:'它', self:true }];
+
+  const head = cols.map(c =>
+    `<th class="${c.self ? 'cit' : c.witness ? 'cwit' : ''}"><span>${escapeHtml(c.name)}</span></th>`
+  ).join('');
+
+  /* 每一句占两行：上面一整行是那句话，下面是各自的裁决，对齐在名字底下。
+     挤在一行里读不出来——这张表是给他推理用的，不是装饰。 */
+  const rows = G.board.map((row, i) => {
+    const cells = cols.map(c => {
+      if (row.gone && row.gone[c.id]) return `<td class="v-gone" title="它把这一格涂掉了">▓</td>`;
+      const key = Object.keys(VERDICTS).find(k => VERDICTS[k].key === row.verdicts[c.id]);
+      const d = VERDICTS[key];
+      return d ? `<td class="${d.cls}" title="${d.key}">${d.mark}</td>` : `<td class="v-na">—</td>`;
+    }).join('');
+    return `<tr class="cr"><td class="claim" colspan="${cols.length + 1}">` +
+           `<b>${i + 1}</b>${escapeHtml(row.claim)}</td></tr>` +
+           `<tr class="vr"><th class="rn"></th>${cells}</tr>`;
+  }).join('');
+
+  wrap.innerHTML =
+    `<table id="btab"><thead><tr><th class="rn"></th>${head}</tr></thead>` +
+    `<tbody>${rows}</tbody></table>`;
+  wrap.scrollTop = 1e9;
+}
+
+/* ================= 说出一句话 =================
+   他唯一能做的事。不是"操作"，是**下判断**——
+   每一次输入都必须是一个他已经推出来的命题，所以没有无效交互。 */
+
+async function sayClaim(){
   const box = $('#cmd');
-  const intent = box.value.trim();
-  if (!intent || G.busy || G.ended || !G.gen) return;
+  const claim = box.value.trim();
+  if (!claim || G.busy || G.ended || !G.gen) return;
 
   box.value = '';
   clearTimeout(idleTimer);
-  say('› ' + intent, 'sys');
+  say('「' + claim + '」', 'claim', `第 ${G.qi + 1} 句`);
   busy(true, '……');
 
   let r;
   try{
-    r = await LLM.act(G.gen, {
+    r = await LLM.ask(G.gen, {
       scene: G.scene.elements,
       note: G.note,
-      history: G.history,
-      intent,
-      focus: G.focus ? G.hotspots[G.focus]?.name : null,
+      cast: G.cast,
+      ledger: G.ledger,
+      lastRun: lastRunMemory(),
+      board: boardForPrompt(),
+      qi: G.qi + 1,
       trust: G.trust, granted: G.granted,
-    });
+    }, claim);
   }catch(err){
     say('（没有回应：' + err.message + '）', 'sys');
     busy(false); touch(); return;
   }
   busy(false);
 
-  say(r.narration);
-  G.history.push(`「${intent}」→ ${r.narration.slice(0, 40)}`);
+  /* 不是一句能判真假的话 —— 这一轮不算数，也不推进它 */
+  if (r.valid === false){
+    say('这不是一句能判真假的话。说一件你认为是真的事，别问，也别下命令。\n比如：「那扇门是从里面锁上的」。', 'sys');
+    touch();
+    return;
+  }
+
+  /* —— 记一行 —— */
+  G.qi++;
+  const verdicts = {};
+  for (const v of (r.voices || [])){
+    if (v && v.id) verdicts[v.id] = v.verdict;
+  }
+  verdicts['__it__'] = r.it?.verdict || '无关';
+  const row = { claim, verdicts, gone:{}, truth: !!r.truth, itSaid: verdicts['__it__'] };
+  G.board.push(row);
+  renderBoard();
+
   G.note = r.note || G.note;
+  G.history.push(`他说「${claim}」`);
+  ledger(`第 ${G.qi} 句，他说：${claim}`);
 
+  /* —— 谁开口了 ——
+     模型压不住嘴，一轮能让五六件东西同时说话，读起来是一锅粥。
+     刻度归代码：最多放三句，先放跟「它」唱反调的那几句——
+     异口同声不含信息，分歧才含。 */
+  const named = Object.fromEntries(G.cast.map(c => [c.id, c.name]));
+  const itV = verdicts['__it__'];
+  const spoke = (r.voices || [])
+    .filter(v => v?.line && v.line.trim() && named[v.id])
+    .sort((a, b) => (a.verdict === itV) - (b.verdict === itV))
+    .slice(0, 3);
+  for (const v of spoke){
+    await sleep(280);
+    const c = LLM.censor(deId(v.line));
+    G.censored += c.count;
+    say(c.html, 'obj' + (v.id === WITNESS_ID ? ' wit' : ''), named[v.id]);
+  }
+  if (r.it?.line && r.it.line.trim()){
+    await sleep(380);
+    const c = LLM.censor(deId(r.it.line));
+    G.censored += c.count;
+    say(c.html, 'it', G.gen.place.slice(0, 12));
+    flick();
+  }
 
+  /* —— 说中要害，画面会因此显形 —— */
+  r.scene = guardWitness(r.scene);
   if (r.scene?.length){
     Render.patch(G.scene, r.scene);
     drawScene();
     logAct(describePatch(r.scene));
+    ledger('场上变了：' + describePatch(r.scene));
   }
 
-  if (r.it_line && r.it_line.trim()){
-    await sleep(450);
-    const c = LLM.censor(r.it_line.trim());
-    G.censored += c.count;
-    say(c.html, 'it', G.gen.place.slice(0, 12));
-    $('#crt').classList.add('flicker');
-    setTimeout(() => $('#crt').classList.remove('flicker'), 700);
-  }
+  /* —— 它涂掉他表上已有的一格 —— */
+  await applyRetract(r.retract);
 
   /* 刻度由代码定：模型只做三选一的判断，换算成分值是代码的事。
      让它直接报数字，它会一直报得偏保守。 */
@@ -302,7 +429,77 @@ async function submit(){
     renderTrust();
   }
   await maybeGrant();
+
+  /* 他往前查一步，它就往前推一步。不等他——异步推进，
+     几秒后它的动作会自己落到侧栏里，那时他已经在想下一句了。 */
+  G.sinceStir++;
+  if (G.sinceStir >= 2){ G.sinceStir = 0; doStir(); }
   touch();
+}
+
+/* 它把某一格涂掉。代码真的改那一格，并且当着他的面改。 */
+async function applyRetract(rt){
+  if (!rt || !rt.qi || rt.qi < 1 || rt.qi > G.board.length) return;
+  const row = G.board[rt.qi - 1];
+  const id = rt.id;
+  if (!(id in row.verdicts)) return;
+
+  /* 见证者不归它管——代码拒绝，而且当着他的面拒绝 */
+  if (id === WITNESS_ID){
+    await sleep(500);
+    say(`它想涂掉第 ${rt.qi} 句里${G.hotspots[WITNESS_ID]?.name || '那件东西'}的回答。它做不到——那一件不归它管。`, 'sys deny');
+    ledger('它试过涂掉见证者的回答，没成功');
+    return;
+  }
+
+  await sleep(500);
+  row.gone[id] = true;
+  renderBoard();
+  const nm = G.hotspots[id]?.name || '某件东西';
+  if (rt.line && rt.line.trim()){
+    const c = LLM.censor(deId(rt.line));
+    G.censored += c.count;
+    say(c.html, 'it', G.gen.place.slice(0, 12));
+  }
+  say(`第 ${rt.qi} 句里「${nm}」的那一格被涂黑了。`, 'sys deny');
+  logAct('涂掉了第 ' + rt.qi + ' 句的一格');
+  ledger(`它涂掉了第 ${rt.qi} 句里「${nm}」的回答`);
+  flick();
+}
+
+/* 给模型看的表：它得知道他手上攒了什么，才知道该涂哪一格 */
+function boardForPrompt(){
+  if (!G.board.length) return '';
+  return G.board.map((row, i) => {
+    const cells = G.cast.map(c => {
+      const v = row.gone[c.id] ? '已涂黑' : (row.verdicts[c.id] || '—');
+      return `${c.name}:${v}`;
+    }).join('　');
+    return `${i + 1}.「${row.claim}」　${cells}　你:${row.verdicts['__it__'] || '—'}`;
+  }).join('\n');
+}
+
+function flick(){
+  $('#crt').classList.add('flicker');
+  setTimeout(() => $('#crt').classList.remove('flicker'), 700);
+}
+
+/* 跨局：见证者是唯一记得上一次的东西 */
+function lastRunMemory(){
+  try{
+    const s = localStorage.getItem(WITNESS_MEMORY_KEY);
+    if (!s) return '';
+    const m = JSON.parse(s);
+    return `上一次这里是「${m.place}」，那个人${m.won ? '最后说中了' : '到走都没说中'}。他说过 ${m.qi} 句话。`;
+  }catch(e){ return ''; }
+}
+
+function saveRunMemory(won){
+  try{
+    localStorage.setItem(WITNESS_MEMORY_KEY, JSON.stringify({
+      place: (G.gen?.place || '').slice(0, 24), won: !!won, qi: G.qi,
+    }));
+  }catch(e){}
 }
 
 /* 把它对画面的改动翻成一句人话，摆在底栏——这是玩家能看见的"它自己动了" */
@@ -366,7 +563,7 @@ async function doGuess(){
   G.attempts.push({ q: rid.q, guess, closeness: v.closeness | 0, hit: !!v.hit });
   G.history.push(`他答「${rid.q}」：${guess}——${v.hit ? '对了' : '没对'}`);
 
-  const c = LLM.censor(v.line);
+  const c = LLM.censor(deId(v.line));
   G.censored += c.count;
   say(c.html, 'it', G.gen.place.slice(0, 12));
 
@@ -432,6 +629,27 @@ async function giveUp(){
 function reveal(guess, v){
   const gaveUp = guess === null;
   $('#endTitle').textContent = v.hit ? '你说中了' : gaveUp ? '你放弃了' : '你没说中';
+  saveRunMemory(!!v.hit);
+
+  /* 它对你撒过几次谎：拿它当时那一票，跟它自己封存的实情对。 */
+  const lies = G.board.filter(r =>
+    (r.truth && r.itSaid === '不是') || (!r.truth && r.itSaid === '是')).length;
+  const trues = G.board.filter(r => r.truth).length;
+
+  /* 场上每一件东西的算盘，开局就封存了，现在一起摊开。
+     玩家回头看自己那张表，才知道哪几行是被谁骗的。 */
+  const minds = G.cast.length ? `<div class="reveal">
+    <div class="rl">场上一共有 ${G.cast.length} 个想法。你以为你在跟一样东西打交道。</div>
+    ${G.cast.map(h => `<div class="mind${h.witness ? ' wit' : ''}">
+      <span class="mn">${escapeHtml(h.name)}</span>
+      <span class="mt t-${escapeHtml(h.toward || '')}">${escapeHtml(h.witness ? '不归它管' : h.toward || '')}</span>
+      <span class="mw">${escapeHtml(h.mind || '')}</span>
+      ${h.slip ? `<div class="ms">它一直捏着：${escapeHtml(h.slip)}</div>` : ''}
+    </div>`).join('')}</div>` : '';
+
+  const stats = G.board.length ? `<div class="reveal">
+    <div class="rl">你说过 ${G.board.length} 句话</div>
+    <div class="rt">其中 ${trues} 句是真的。它当着你的面否认了 ${lies} 次。</div></div>` : '';
 
   const tries = G.attempts.length
     ? `<div class="reveal"><div class="rl">你一共猜了 ${G.attempts.length} 次</div>
@@ -445,6 +663,8 @@ function reveal(guess, v){
       ${G.riddles.map(r => `<div class="ans${r.core ? ' core' : ''}${r.solved ? ' got' : ''}">
         <div class="aq">${r.solved ? '✓' : '　'} ${escapeHtml(r.q)}</div>
         <div class="aa">${escapeHtml(r.sealed)}</div></div>`).join('')}</div>
+    ${minds}
+    ${stats}
     ${tries}
     <div class="reveal"><div class="rl">${G.granted ? '你让它松了口，它给你看的那件事' : '它本来愿意让你看的那件事——你没能让它开口'}</div>
       <div class="rt">${escapeHtml(G.gen.concession || '')}</div></div>
@@ -523,9 +743,11 @@ async function newRun(){
 
   Object.assign(G, {
     gen:null, sealed:null, scene:{ elements:[] }, hotspots:{},
+    cast:[], board:[], qi:0, ledger:[], sinceStir:0, stirring:false, stirLog:[],
     history:[], note:'', acts:[], attempts:[], riddles:[], pick:0, coolUntil:0,
     trust:0, granted:false, stirs:0, lastAct:Date.now(), focus:null, ended:false, censored:0,
   });
+  renderBoard();
   $('#feed').innerHTML = '';
   $('#scene').innerHTML = '';
   $('#clueList').innerHTML = '<span class="empty">—</span>';
@@ -579,15 +801,23 @@ async function newRun(){
   G.pick = 0;
 
   G.scene = g.scene;
-  G.hotspots = Object.fromEntries((g.hotspots || []).map(h => [h.id, h]));
+  /* 只保留真的画在场上的那些——模型偶尔会给一个不存在的 id */
+  const drawn = new Set(g.scene.elements.map(e => e.id));
+  G.cast = (g.hotspots || []).filter(h => drawn.has(h.id));
+  G.hotspots = Object.fromEntries(G.cast.map(h => [h.id, h]));
+  ledger('他进来了。场上有：' + G.cast.map(h => h.name).join('、'));
 
   bootDone();
   G.lastAct = Date.now();
+  denied = false;
   renderTrust();
+  renderBoard();
   $('#placeName').textContent = (g.place || '').split(/[。，,]/)[0].slice(0, 22);
   drawScene();
   refreshGuessBtn();
   say(g.opening);
+  await sleep(400);
+  say('你只能做一件事：说出一句你认为是真的话。\n场上每一件东西会各自回答 是／不是／无关，或者答不上来。\n它们互相不合，谁都可能骗你——只有角落里那一件不会。', 'sys');
   scheduleStir();
   $('#cmd').disabled = false;
   $('#cmd').focus();
@@ -622,11 +852,18 @@ const DEMO = {
     { id:'junk',   kind:'debris', x:440, y:390, w:60,  h:18, count:9 },
   ]},
   hotspots:[
-    { id:'panel1', name:'控制面板', look:'屏幕泛着绿光。温度读数在缓慢漂移。下面一排按键没有任何标识，只有磨损。' },
-    { id:'door1',  name:'铁门',     look:'门把手上凝着冰粒。锁舌的位置被焊了一颗螺栓，从里面封死的。' },
-    { id:'man',    name:'影子',     look:'墙上有一片颜色更深的地方，形状像一个站了很久的人。' },
-    { id:'block',  name:'？',       look:'这一块你看不见。它不让你看。' },
-    { id:'crate',  name:'货箱',     look:'纸箱受过潮，底边发黑，堆放的批号全都一样。' },
+    { id:'panel1', name:'控制面板', toward:'帮它',   mind:'想让读数一直好看', slip:'（自检）',
+      look:'屏幕泛着绿光。温度读数在缓慢漂移。下面一排按键没有任何标识，只有磨损。' },
+    { id:'door1',  name:'铁门',     toward:'恨它',   mind:'想被人从外面打开', slip:'（自检）',
+      look:'门把手上凝着冰粒。锁舌的位置被焊了一颗螺栓，从里面封死的。' },
+    { id:'man',    name:'影子',     toward:'不在乎', mind:'想等到天亮',       slip:'（自检）',
+      look:'墙上有一片颜色更深的地方，形状像一个站了很久的人。' },
+    { id:'block',  name:'？',       toward:'想取代它', mind:'想让人以为它才是这里说了算的', slip:'（自检）',
+      look:'这一块你看不见。它不让你看。' },
+    { id:'crate',  name:'货箱',     toward:'不在乎', mind:'想被搬走',         slip:'（自检）',
+      look:'纸箱受过潮，底边发黑，堆放的批号全都一样。' },
+    { id:'stn',    name:'地上那摊', witness:true, toward:'不在乎', mind:WITNESS_MIND, slip:'',
+      look:'一摊干掉很久的东西。边缘一圈更深的印子，说明它以前更大。没人擦过它。' },
   ],
   past:'（自检模式，没有往事。）',
   intent:'（自检模式，没有封存内容。）',
@@ -638,24 +875,47 @@ function runDemo(){
   G.gen = DEMO;
   G.sealed = DEMO.intent;
   G.scene = DEMO.scene;
+  G.cast = DEMO.hotspots;
   G.hotspots = Object.fromEntries(DEMO.hotspots.map(h => [h.id, h]));
   $('#placeName').textContent = '渲染自检';
   drawScene();
+
+  /* 顺便把真值表也摆出来看看 —— 不调 API。
+     分布照实战来：大半是「无关」，「不能说」很稀有。 */
+  DEMO_CLAIMS.forEach(([claim, ...vs]) => {
+    const verdicts = {};
+    G.cast.forEach((c, j) => { verdicts[c.id] = vs[j] || '无关'; });
+    verdicts['__it__'] = vs[G.cast.length] || '无关';
+    G.board.push({ claim, verdicts, gone:{}, truth:true, itSaid: verdicts['__it__'] });
+  });
+  G.board[2].gone['door1'] = true;      // 它涂掉过一格
+  renderBoard();
+
   say(DEMO.opening);
   say('图元清单：' + Render.KINDS.join('、'), 'sys');
   $('#cmd').disabled = true;
   $('#cmd').placeholder = '自检模式不接受输入';
 }
 
+/* 一句话 + 每一件东西的裁决（顺序照 DEMO.hotspots，最后一个是「它」） */
+const DEMO_CLAIMS = [
+  ['这扇门是从里面焊死的',        '无关','是','无关','无关','无关','是','不是'],
+  ['这里的温度从来没到过标称值',  '不是','无关','无关','无关','是','是','不是'],
+  ['货箱里装的不是货',            '无关','不是','无关','不能说','是','无关','不是'],
+  ['墙上那个影子是有人站出来的',  '无关','无关','不能说','无关','无关','是','无关'],
+  ['那天夜里这里只来过一个人',    '无关','是','无关','不是','无关','是','是'],
+];
+
 /* ================= 启动 ================= */
 
+/* 全是陈述句。玩家第一眼就得知道这里要填什么。 */
 const PLACEHOLDERS = [
-  '你想做什么？',
-  '推开那扇门',
-  '对它说话',
-  '把手放在屏幕上',
-  '大声问：你是谁',
-  '什么都不做，等着',
+  '说出一句你认为是真的话',
+  '那扇门是从里面锁上的',
+  '这里以前不是干这个的',
+  '你在等的那个人不会来了',
+  '它们当中有一件在替你撒谎',
+  '这件事发生的时候，你在场',
 ];
 
 function refreshMode(){
@@ -667,8 +927,8 @@ function refreshMode(){
 function init(){
   refreshMode();
 
-  $('#send').onclick = submit;
-  $('#cmd').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  $('#send').onclick = sayClaim;
+  $('#cmd').addEventListener('keydown', e => { if (e.key === 'Enter') sayClaim(); });
   $('#focusTag').onclick = clearFocus;
 
   $('#btnGuess').onclick = () => {
@@ -708,7 +968,20 @@ function init(){
   }, 3500);
 
   if (location.search.includes('demo')) runDemo();
-  else newRun();
+  else newRun().then(autoPlay);
+}
+
+/* QA 用：?auto=第一句|第二句　开局跑完之后自动说几句，
+   用来截真实一局的图，不用手打。 */
+async function autoPlay(){
+  const m = /[?&]auto=([^&]*)/.exec(location.search);
+  if (!m || !G.gen) return;
+  for (const claim of decodeURIComponent(m[1]).split('|')){
+    if (!claim.trim() || G.ended) break;
+    $('#cmd').value = claim.trim();
+    await sayClaim();
+    await sleep(1200);
+  }
 }
 
 init();

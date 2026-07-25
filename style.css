@@ -51,7 +51,7 @@ button,input{font-family:inherit}
 #stage{flex:1;min-width:0;position:relative;display:flex;align-items:center;justify-content:center;padding:10px}
 #scene{width:100%;height:100%}
 #side{
-  width:392px;border-left:1px solid var(--line);background:var(--panel);
+  width:430px;border-left:1px solid var(--line);background:var(--panel);
   display:flex;flex-direction:column;min-height:0;
 }
 
@@ -86,8 +86,8 @@ button,input{font-family:inherit}
 @keyframes bl{0%,100%{opacity:.2}50%{opacity:1}}
 
 /* 侧栏 */
-#objHead{padding:12px 16px;border-bottom:1px solid var(--line)}
-#objName{color:var(--amber);font-family:"Cascadia Mono",monospace;font-size:13px;letter-spacing:.1em;margin-bottom:8px}
+#objHead{padding:7px 16px;border-bottom:1px solid var(--line)}
+#objName{color:var(--amber);font-family:"Cascadia Mono",monospace;font-size:12px;letter-spacing:.1em}
 #objVerbs{display:flex;flex-wrap:wrap;gap:6px}
 .verb{
   background:transparent;border:1px solid var(--line);color:var(--txt);
@@ -251,6 +251,94 @@ button,input{font-family:inherit}
 .rq{flex:1}
 .rtag{font-size:10px;letter-spacing:.1em;color:#7fd0a8;white-space:nowrap}
 .rtag.core{color:var(--amber-fade)}
+/* ============================================================
+   真值表 —— 行是他说过的一句话，列是场上一件东西
+   这是他唯一能看见的"信息增量"
+   ============================================================ */
+#boardHead{
+  padding:8px 14px 6px;display:flex;align-items:baseline;gap:10px;
+  border-bottom:1px solid var(--line);
+}
+.bh{font-family:"Cascadia Mono",monospace;font-size:10px;letter-spacing:.16em;color:var(--amber)}
+.bhint{font-size:10px;color:var(--amber-fade);margin-left:auto}
+/* 按内容撑，别霸占空地——表只有三行的时候，下面的正文该拿到那块地方 */
+#board{
+  flex:0 1 auto;max-height:50%;min-height:118px;overflow:auto;
+  border-bottom:1px solid var(--line);padding:0 10px 10px;
+}
+#board::-webkit-scrollbar{width:6px;height:6px}
+#board::-webkit-scrollbar-thumb{background:var(--line)}
+.bempty{padding:26px 12px;font-size:12px;color:var(--amber-fade);text-align:center;line-height:1.9}
+#btab{border-collapse:collapse;font-family:"Cascadia Mono",Consolas,monospace;width:100%;table-layout:fixed}
+#btab th,#btab td{padding:0;text-align:center;vertical-align:middle}
+#btab thead th{
+  position:sticky;top:0;background:var(--panel);z-index:2;
+  height:74px;padding-bottom:6px;border-bottom:1px solid var(--amber-fade);
+}
+#btab thead th span{
+  writing-mode:vertical-rl;font-size:11px;letter-spacing:.08em;
+  color:var(--amber-dim);white-space:nowrap;
+}
+#btab thead th.cit span{color:var(--amber);font-weight:600}
+#btab thead th.cwit span{color:#7fd0a8}
+#btab .rn{width:16px}
+/* 上面一行：他说的那句话，占满整行 */
+#btab .cr .claim{
+  text-align:left;font-family:inherit;font-size:13px;color:var(--txt);
+  padding:9px 2px 1px;line-height:1.5;border-top:1px solid #141a18;
+}
+#btab tbody tr:first-child .claim{border-top:none}
+#btab .cr .claim b{
+  color:var(--amber-fade);font-family:"Cascadia Mono",monospace;font-size:10px;
+  font-weight:400;margin-right:8px;
+}
+/* 下面一行：各自的裁决，对齐在名字底下 */
+#btab .vr td{height:24px;font-size:14px;line-height:24px}
+#btab .vr:hover td{background:rgba(224,164,74,.05)}
+/* 四种裁决。「无关」故意画得很淡——它划的是知识边界，不是废话；
+   「是」要跳出来，玩家扫一眼就该看见哪几列亮了。 */
+.v-yes{color:var(--amber);font-weight:700}
+.v-no{color:#5d6b64;font-size:12px}
+.v-na{color:#252e2b}
+/* 跟正文里被抹掉的词用同一套视觉语言（.cen）——那也是代码真的抹的 */
+.v-mute{color:#2a2320;background:#2a2320;letter-spacing:-2px}
+.v-gone{color:#411f16;background:#411f16;letter-spacing:-2px}
+
+#itMoving{
+  position:absolute;right:14px;top:12px;font-family:"Cascadia Mono",monospace;
+  font-size:10px;letter-spacing:.16em;color:var(--amber-dim);
+  border:1px solid var(--amber-fade);padding:2px 8px;animation:bl 1.6s infinite;
+}
+#itMoving.hidden{display:none}
+#sayMark{
+  font-family:"Cascadia Mono",monospace;font-size:11px;letter-spacing:.1em;
+  color:var(--amber);border:1px solid var(--amber-fade);padding:6px 9px;
+}
+
+/* 他说的那一句 */
+.entry.claim{border-left:2px solid var(--amber-dim);padding-left:11px}
+.entry.claim p{color:var(--amber);font-size:15px;letter-spacing:.02em}
+/* 某一件东西开口 */
+.entry.obj{border-left:2px solid #4a5a52;padding-left:11px}
+.entry.obj .src{color:#7d9088}
+.entry.obj p{color:#bdc9be}
+.entry.obj.wit{border-left-color:#7fd0a8}
+.entry.obj.wit .src{color:#7fd0a8}
+/* 代码拦下它的时候 */
+.entry.deny p{color:var(--red)}
+
+/* 结算：摊开每一件东西的算盘 */
+.mind{padding:6px 0 6px 10px;border-left:2px solid var(--line);margin:6px 0}
+.mind.wit{border-left-color:#7fd0a8}
+.mn{color:#f0dcb4;margin-right:10px}
+.mt{font-size:10px;font-family:"Cascadia Mono",monospace;letter-spacing:.1em;
+    border:1px solid var(--line);padding:1px 6px;margin-right:10px;color:var(--amber-fade)}
+.mt.t-恨它{border-color:#8a4a3a;color:#c8735f}
+.mt.t-帮它{border-color:#3d6b58;color:#7fd0a8}
+.mt.t-想取代它{border-color:var(--amber-fade);color:var(--amber)}
+.mw{color:var(--txt)}
+.ms{font-size:12px;color:var(--amber-dim);margin-top:2px}
+
 /* 结算里的答案表 */
 .ans{margin:8px 0;padding-left:10px;border-left:2px solid var(--line)}
 .ans.core{border-left-color:var(--amber)}

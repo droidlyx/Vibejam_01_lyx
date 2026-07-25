@@ -30,13 +30,17 @@
     <svg id="scene" viewBox="0 0 800 500" preserveAspectRatio="xMidYMid meet"></svg>
     <div id="boot" class="hidden"></div>
     <div id="thinking" class="hidden"></div>
+    <div id="itMoving" class="hidden">它在动</div>
   </section>
 
   <aside id="side">
+    <div id="boardHead">
+      <span class="bh">它们各自怎么说</span>
+      <span class="bhint">点画面里的东西＝看，不花时间</span>
+    </div>
+    <div id="board"></div>
     <div id="objHead">
       <div id="objName">—</div>
-      <div id="objSub">点击画面里的东西＝观察，不花时间。想做什么，在下面打出来。<br>
-      你不动的时候它也在动。让它对你松口，你能多看见一点。</div>
     </div>
     <div id="feed"></div>
   </aside>
@@ -45,8 +49,9 @@
 <footer id="bottom">
   <div id="inputRow">
     <span id="focusTag" class="hidden"></span>
-    <input id="cmd" type="text" autocomplete="off" spellcheck="false" placeholder="你想做什么？" disabled>
-    <button id="send" class="tbtn">执行</button>
+    <span id="sayMark">说</span>
+    <input id="cmd" type="text" autocomplete="off" spellcheck="false" placeholder="说出一句你认为是真的话" disabled>
+    <button id="send" class="tbtn">说出来</button>
   </div>
   <div id="clueRow">
     <span class="cluesLabel">它做过的</span>
@@ -67,7 +72,7 @@
     <p class="note dim">它在这一局开始之前就把答案写下来了，代码封存着。<br>
       猜错不会结束这一局——它会作出反应，你可以接着找。<br>
       但每猜错一次，它会把注意力收回去一段时间（60 秒起，逐次递增）。
-      <b>这段时间游戏照常</b>——观察、行动、翻线索都不受影响，接着查就是了。</p>
+      <b>这段时间游戏照常</b>——看东西、说话、往表上填，都不受影响。</p>
     <div class="modalFoot">
       <button class="tbtn hl" id="guessGo">说出来</button>
       <span style="display:flex;gap:8px">

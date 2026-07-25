@@ -240,7 +240,10 @@ const Render = (() => {
 
   /* 尺寸软上限：防止某一件东西大到吃掉整幅画。
      门/管道/窗/涂块本来就可能很大，不限。 */
-  const BIG_OK = new Set(['door', 'pipe', 'window', 'redact']);
+  /* window 曾经也在这里，结果它拿 window 画了个 400×280 的空框吃掉半张画面。
+     真正需要越界的只有门（高）、梁管（长）、和它自己的涂黑块。 */
+  const BIG_OK = new Set(['door', 'pipe', 'redact']);
+  const FLAT   = new Set(['pipe', 'cable', 'text', 'stain', 'debris', 'light']);
 
   /* 容错：坐标夹进画布，尺寸给上下限，字段缺失有默认值 */
   function normalize(e){
@@ -249,10 +252,14 @@ const Render = (() => {
     const y = Math.max(0, Math.min(490, num(e.y, 0)));
     const capW = BIG_OK.has(kind) ? 800 : 300;
     const capH = BIG_OK.has(kind) ? 500 : 220;
+    /* 下限：它中途补进来的图元经常给 1×1，那等于没画。
+       线状的东西（管、缆、字、地上那摊）本来就该扁，只兜宽度。 */
+    const flat = FLAT.has(kind);
+    const minW = 24, minH = flat ? 3 : 20;
     return { ...e,
       x, y, kind,
-      w: Math.max(4, Math.min(800 - x, capW, num(e.w, 40))),
-      h: Math.max(3, Math.min(500 - y, capH, num(e.h, 40))),
+      w: Math.max(minW, Math.min(800 - x, capW, num(e.w, 40))),
+      h: Math.max(minH, Math.min(500 - y, capH, num(e.h, 40))),
     };
   }
 
