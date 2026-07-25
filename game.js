@@ -8,7 +8,7 @@
    它想什么、做什么、说什么谎，代码一概不管。
    ============================================================ */
 
-const G = {
+var G = window.G = {
   gen: null,        // 开局产物
   sealed: null,     // 封存的 intent —— 只在结算时才读
   scene: { elements: [] },
@@ -17,6 +17,8 @@ const G = {
   note: '',
   acts: [],         // 它做过的事，给玩家看的流水
   attempts: [],     // 猜过几次
+  riddles: [],      // 这一局它出的题。第 0 道是核心题（它想要什么）
+  pick: 0,          // 当前选中哪一道
   coolUntil: 0,     // 猜错后的冷却截止时间戳。冷却期间游戏照常，玩家继续查。
   trust: 0,         // 它对你的戒备松了多少。0=完全提防
   granted: false,   // 它是否已经把那件事让出来了（一局一次）
@@ -321,6 +323,25 @@ function describePatch(patch){
   return bits.slice(0, 3).join('，');
 }
 
+/* ================= 它出的题 ================= */
+
+function renderRiddles(){
+  const box = $('#riddleList');
+  box.innerHTML = '';
+  G.riddles.forEach((r, i) => {
+    const d = document.createElement('div');
+    d.className = 'riddle' + (G.pick === i ? ' on' : '') + (r.solved ? ' done' : '') + (r.core ? ' core' : '');
+    d.innerHTML = `<span class="rq">${escapeHtml(r.q)}</span>` +
+      (r.solved ? `<span class="rtag">已答对</span>`
+                : r.core ? `<span class="rtag core">答对即通关</span>` : '');
+    if (!r.solved) d.onclick = () => { G.pick = i; renderRiddles(); $('#guessInput').focus(); };
+    box.appendChild(d);
+  });
+  const r = G.riddles[G.pick];
+  $('#guessInput').placeholder = r ? '回答：' + r.q : '用一句话说出来';
+  $('#guessInput').disabled = !r || r.solved;
+}
+
 /* ================= 结算 ================= */
 
 async function doGuess(){
@@ -330,29 +351,46 @@ async function doGuess(){
   say('› ' + guess, 'sys');
   busy(true, '……');
 
+  const rid = G.riddles[G.pick];
+  if (!rid || rid.solved) return;
+
   let v;
   try{
-    v = await LLM.verdict(G.gen, guess, G.history);
+    v = await LLM.verdict(G.gen, { question: rid.q, answer: rid.sealed }, guess, G.history);
   }catch(err){
     say('（它没有回应：' + err.message + '）', 'sys');
     busy(false); return;
   }
   busy(false);
 
-  G.attempts.push({ guess, closeness: v.closeness | 0, hit: !!v.hit });
-  G.history.push(`他猜：「${guess}」——${v.hit ? '说中了' : '没说中'}`);
+  G.attempts.push({ q: rid.q, guess, closeness: v.closeness | 0, hit: !!v.hit });
+  G.history.push(`他答「${rid.q}」：${guess}——${v.hit ? '对了' : '没对'}`);
 
   const c = LLM.censor(v.line);
   G.censored += c.count;
   say(c.html, 'it', G.gen.place.slice(0, 12));
 
   if (v.hit){
-    G.ended = true;
-    clearTimeout(idleTimer);
-    $('#cmd').disabled = true;
-    refreshGuessBtn();
-    await sleep(1600);
-    reveal(guess, v);
+    rid.solved = true;
+
+    if (rid.core){                       // 核心题答对 → 这一局结束
+      G.ended = true;
+      clearTimeout(idleTimer);
+      $('#cmd').disabled = true;
+      refreshGuessBtn();
+      await sleep(1600);
+      reveal(guess, v);
+      return;
+    }
+
+    /* 次要题答对 → 撬开它一点。这是次要题存在的意义。 */
+    logAct('答对了：' + rid.q);
+    G.trust = Math.min(100, G.trust + 25);
+    renderTrust();
+    await maybeGrant();
+    await sleep(500);
+    say(`你答对了。它对你松了一点。（还剩 ${G.riddles.filter(x => !x.solved).length} 道没答）`, 'sys');
+    busy(false);
     return;
   }
 
@@ -398,13 +436,15 @@ function reveal(guess, v){
   const tries = G.attempts.length
     ? `<div class="reveal"><div class="rl">你一共猜了 ${G.attempts.length} 次</div>
         <div class="mono dim" style="white-space:pre-wrap">${
-          G.attempts.map((a, i) => `${i + 1}. ${escapeHtml(a.guess)}　${a.hit ? '✓' : a.closeness}`).join('\n')
+          G.attempts.map((a, i) => `${i + 1}. [${escapeHtml((a.q || '').slice(0, 12))}] ${escapeHtml(a.guess)}　${a.hit ? '✓' : a.closeness}`).join('\n')
         }</div></div>`
     : '';
 
   $('#endBody').innerHTML = `
-    <div class="reveal"><div class="rl">它在这一局开始之前写下的，封存至今</div>
-      <div class="rt big">${escapeHtml(G.sealed)}</div></div>
+    <div class="reveal"><div class="rl">它在这一局开始之前就写好的全部答案，封存至今</div>
+      ${G.riddles.map(r => `<div class="ans${r.core ? ' core' : ''}${r.solved ? ' got' : ''}">
+        <div class="aq">${r.solved ? '✓' : '　'} ${escapeHtml(r.q)}</div>
+        <div class="aa">${escapeHtml(r.sealed)}</div></div>`).join('')}</div>
     ${tries}
     <div class="reveal"><div class="rl">${G.granted ? '你让它松了口，它给你看的那件事' : '它本来愿意让你看的那件事——你没能让它开口'}</div>
       <div class="rt">${escapeHtml(G.gen.concession || '')}</div></div>
@@ -483,7 +523,7 @@ async function newRun(){
 
   Object.assign(G, {
     gen:null, sealed:null, scene:{ elements:[] }, hotspots:{},
-    history:[], note:'', acts:[], attempts:[], coolUntil:0,
+    history:[], note:'', acts:[], attempts:[], riddles:[], pick:0, coolUntil:0,
     trust:0, granted:false, stirs:0, lastAct:Date.now(), focus:null, ended:false, censored:0,
   });
   $('#feed').innerHTML = '';
@@ -526,6 +566,17 @@ async function newRun(){
   /* —— 代码唯一的强制力：把它写下的东西封存 —— */
   G.gen = g;
   G.sealed = String(g.intent);   // 封存：拷贝一份，之后只在结算时读
+
+  /* 核心题永远在第一位；其余是它这一局自己出的 */
+  G.riddles = [
+    { q: FINAL_QUESTION, sealed: String(g.intent), core: true, solved: false },
+    ...(g.riddles || []).slice(0, 3).map(r => ({
+      q: String(r.question || '').trim(),
+      sealed: String(r.answer || '').trim(),
+      core: false, solved: false,
+    })).filter(r => r.q && r.sealed),
+  ];
+  G.pick = 0;
 
   G.scene = g.scene;
   G.hotspots = Object.fromEntries((g.hotspots || []).map(h => [h.id, h]));
@@ -615,7 +666,6 @@ function refreshMode(){
 
 function init(){
   refreshMode();
-  $('#guessQ').textContent = FINAL_QUESTION;
 
   $('#send').onclick = submit;
   $('#cmd').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
@@ -624,6 +674,7 @@ function init(){
   $('#btnGuess').onclick = () => {
     if (!G.gen || G.ended || coolLeft() > 0) return;
     $('#guessInput').value = '';
+    renderRiddles();
     $('#guessModal').classList.remove('hidden');
     $('#guessInput').focus();
   };

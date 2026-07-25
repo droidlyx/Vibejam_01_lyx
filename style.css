@@ -236,3 +236,25 @@ button,input{font-family:inherit}
 .entry.grant{border-left:2px solid #7fd0a8;padding-left:11px;animation:fade .5s}
 .entry.grant .src{color:#7fd0a8}
 .entry.grant p{color:#d8ecd8}
+
+/* 它出的题 */
+#riddleList{margin:12px 0 16px;display:flex;flex-direction:column;gap:6px}
+.riddle{
+  border:1px solid var(--line);padding:8px 11px;cursor:pointer;
+  display:flex;align-items:center;gap:10px;font-size:13px;
+}
+.riddle:hover{border-color:var(--amber-dim)}
+.riddle.on{border-color:var(--amber);background:rgba(224,164,74,.06)}
+.riddle.core .rq{color:var(--amber)}
+.riddle.done{opacity:.45;cursor:default;border-style:dashed}
+.riddle.done:hover{border-color:var(--line)}
+.rq{flex:1}
+.rtag{font-size:10px;letter-spacing:.1em;color:#7fd0a8;white-space:nowrap}
+.rtag.core{color:var(--amber-fade)}
+/* 结算里的答案表 */
+.ans{margin:8px 0;padding-left:10px;border-left:2px solid var(--line)}
+.ans.core{border-left-color:var(--amber)}
+.ans.got{border-left-color:#7fd0a8}
+.aq{font-size:12px;color:var(--amber-fade)}
+.aa{color:#f0dcb4}
+.ans.core .aa{color:var(--amber);font-size:15px}
