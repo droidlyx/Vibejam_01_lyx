@@ -18,6 +18,10 @@ const G = {
   acts: [],         // 它做过的事，给玩家看的流水
   attempts: [],     // 猜过几次
   coolUntil: 0,     // 猜错后的冷却截止时间戳。冷却期间游戏照常，玩家继续查。
+  trust: 0,         // 它对你的戒备松了多少。0=完全提防
+  granted: false,   // 它是否已经把那件事让出来了（一局一次）
+  stirs: 0,         // 它自己动过几次
+  lastAct: 0,       // 玩家上一次有动作的时间戳
   focus: null,
   busy: false,
   ended: false,
@@ -93,6 +97,7 @@ function observe(id){
   say(h.look);
   G.history.push('看了 ' + h.name);
   drawScene();
+  touch();
   if (!G.ended) $('#cmd').focus();
 }
 
@@ -148,6 +153,96 @@ setInterval(() => {
   }
 }, 1000);
 
+/* ================= 戒备 ================= */
+
+function renderTrust(){
+  const box = $('#trust');
+  if (!G.gen){ box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const n = Math.max(0, Math.min(100, G.trust));
+  $('#trustFill').style.width = n + '%';
+  $('#trustNote').textContent = G.granted ? '它让你看了' : n >= 60 ? '它快松口了' : n >= 25 ? '它在掂量你' : '它提防着你';
+}
+
+/* 它把那件事让出来。代码守一道底线：戒备不到 60，它说了也不算。 */
+async function maybeGrant(){
+  if (G.granted || G.trust < 60) return;
+  G.granted = true;
+  await sleep(600);
+  const c = LLM.censor(G.gen.concession);
+  G.censored += c.count;
+  const e = document.createElement('div');
+  e.className = 'entry grant';
+  e.innerHTML = `<div class="src">它让你看了一眼</div><p>${c.html}</p>`;
+  $('#feed').appendChild(e);
+  $('#feed').scrollTop = 1e9;
+  G.history.push('（它松口了，让他知道了一件事）');
+  logAct('它让你看了一眼');
+  renderTrust();
+}
+
+/* ================= 它自己动 ================= */
+
+let idleTimer = null;
+const IDLE_STEPS = [32000, 45000, 62000];     // 连续无操作时，间隔逐次拉长
+
+function scheduleStir(){
+  clearTimeout(idleTimer);
+  if (G.ended || !G.gen || !LLM.online()) return;
+  const wait = IDLE_STEPS[Math.min(G.stirs, IDLE_STEPS.length - 1)];
+  idleTimer = setTimeout(doStir, wait);
+}
+
+function touch(){                              // 玩家有动作了，重排下一次
+  G.lastAct = Date.now();
+  G.stirs = 0;
+  scheduleStir();
+}
+
+async function doStir(){
+  if (G.busy || G.ended || !G.gen) { scheduleStir(); return; }
+  const idleSec = Math.round((Date.now() - G.lastAct) / 1000);
+
+  G.busy = true;
+  $('#thinking').classList.remove('hidden');
+  $('#thinking').innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span> ';
+
+  let r;
+  try{
+    r = await LLM.stir(G.gen, {
+      scene: G.scene.elements, note: G.note, history: G.history,
+      trust: G.trust, granted: G.granted, stirs: G.stirs, idleSec,
+    });
+  }catch(err){
+    console.warn('[stir] 失败', err.message);
+    G.busy = false; $('#thinking').classList.add('hidden'); scheduleStir(); return;
+  }
+  G.busy = false;
+  $('#thinking').classList.add('hidden');
+  $('#cmd').disabled = G.ended;
+
+  G.stirs++;
+  G.note = r.note || G.note;
+  say(r.narration, 'stir');
+  G.history.push(`（没人碰它，它自己动了：${r.narration.slice(0, 30)}）`);
+
+  if (r.scene?.length){
+    Render.patch(G.scene, r.scene);
+    drawScene();
+    logAct('▸ ' + describePatch(r.scene));
+  }
+  if (r.it_line && r.it_line.trim()){
+    await sleep(400);
+    const c = LLM.censor(r.it_line.trim());
+    G.censored += c.count;
+    say(c.html, 'it', G.gen.place.slice(0, 12));
+  }
+  $('#crt').classList.add('flicker');
+  setTimeout(() => $('#crt').classList.remove('flicker'), 700);
+
+  scheduleStir();
+}
+
 /* ================= 行动 ================= */
 
 async function submit(){
@@ -156,6 +251,7 @@ async function submit(){
   if (!intent || G.busy || G.ended || !G.gen) return;
 
   box.value = '';
+  clearTimeout(idleTimer);
   say('› ' + intent, 'sys');
   busy(true, '……');
 
@@ -167,10 +263,11 @@ async function submit(){
       history: G.history,
       intent,
       focus: G.focus ? G.hotspots[G.focus]?.name : null,
+      trust: G.trust, granted: G.granted,
     });
   }catch(err){
     say('（没有回应：' + err.message + '）', 'sys');
-    busy(false); return;
+    busy(false); touch(); return;
   }
   busy(false);
 
@@ -193,13 +290,25 @@ async function submit(){
     $('#crt').classList.add('flicker');
     setTimeout(() => $('#crt').classList.remove('flicker'), 700);
   }
+
+  /* 刻度由代码定：模型只做三选一的判断，换算成分值是代码的事。
+     让它直接报数字，它会一直报得偏保守。 */
+  const STEP = { met: 60, slight: 10, none: 0 };
+  const d = (STEP[r.moved] ?? 0) - (r.hostile ? 12 : 0);
+  if (d){
+    G.trust = Math.max(0, Math.min(100, G.trust + d));
+    renderTrust();
+  }
+  await maybeGrant();
+  touch();
 }
 
 /* 把它对画面的改动翻成一句人话，摆在底栏——这是玩家能看见的"它自己动了" */
 function describePatch(patch){
   const bits = patch.map(p => {
     const h = G.hotspots[p.id];
-    const n = h ? h.name : p.id;
+    // 没有热区的图元不要把英文 id 摊给玩家看
+    const n = h ? h.name : '有什么';
     if (p.remove) return n + ' 不见了';
     if (p.kind === 'redact') return n + ' 被盖住了';
     if (p.on === false) return n + ' 灭了';
@@ -239,6 +348,7 @@ async function doGuess(){
 
   if (v.hit){
     G.ended = true;
+    clearTimeout(idleTimer);
     $('#cmd').disabled = true;
     refreshGuessBtn();
     await sleep(1600);
@@ -273,6 +383,7 @@ async function giveUp(){
   if (G.ended || !G.gen) return;
   $('#guessModal').classList.add('hidden');
   G.ended = true;
+  clearTimeout(idleTimer);
   $('#cmd').disabled = true;
   refreshGuessBtn();
   say('你不再猜了。', 'sys');
@@ -295,6 +406,10 @@ function reveal(guess, v){
     <div class="reveal"><div class="rl">它在这一局开始之前写下的，封存至今</div>
       <div class="rt big">${escapeHtml(G.sealed)}</div></div>
     ${tries}
+    <div class="reveal"><div class="rl">${G.granted ? '你让它松了口，它给你看的那件事' : '它本来愿意让你看的那件事——你没能让它开口'}</div>
+      <div class="rt">${escapeHtml(G.gen.concession || '')}</div></div>
+    <div class="reveal"><div class="rl">本来能让它松口的是</div>
+      <div class="rt">${escapeHtml(G.gen.condition || '')}</div></div>
     <div class="reveal"><div class="rl">它为什么说不出口</div>
       <div class="rt">${escapeHtml(G.gen.why_silent)}</div></div>
     <div class="reveal"><div class="rl">它没说出口的</div>
@@ -310,19 +425,19 @@ const escapeHtml = s => String(s).replace(/[&<>]/g, m => ({ '&':'&amp;', '<':'&l
 /* ================= 开局 ================= */
 
 const BOOT_LINES = [
-  'ECHO 控制中枢　自检',
-  '电源母线……正常',
-  '温控回路……正常',
-  '照明回路……正常',
-  '记录单元……正常',
-  '对外通信……无信号',
-  '发声模块……',
-  '发声模块……未找到',
+  '……',
   '',
-  '检测到未登记人员　1',
+  '有动静',
+  '有人进来了　1',
   '',
-  '正在决定该拿他怎么办',
-];
+  '上一次有人进来是很久以前',
+  '正在回想这是什么地方',
+  '正在回想这里出过什么事',
+  '正在回想我是什么',
+  '',
+  '正在决定让他看见多少',
+  '正在决定要不要理他',
+]
 
 let bootStop = false;
 
@@ -368,7 +483,8 @@ async function newRun(){
 
   Object.assign(G, {
     gen:null, sealed:null, scene:{ elements:[] }, hotspots:{},
-    history:[], note:'', acts:[], attempts:[], coolUntil:0, focus:null, ended:false, censored:0,
+    history:[], note:'', acts:[], attempts:[], coolUntil:0,
+    trust:0, granted:false, stirs:0, lastAct:Date.now(), focus:null, ended:false, censored:0,
   });
   $('#feed').innerHTML = '';
   $('#scene').innerHTML = '';
@@ -415,10 +531,13 @@ async function newRun(){
   G.hotspots = Object.fromEntries((g.hotspots || []).map(h => [h.id, h]));
 
   bootDone();
+  G.lastAct = Date.now();
+  renderTrust();
   $('#placeName').textContent = (g.place || '').split(/[。，,]/)[0].slice(0, 22);
   drawScene();
   refreshGuessBtn();
   say(g.opening);
+  scheduleStir();
   $('#cmd').disabled = false;
   $('#cmd').focus();
   console.log('[封存]', G.sealed, '\n[往事]', g.past);
@@ -517,12 +636,13 @@ function init(){
 
   $('#btnCfg').onclick = () => {
     $('#apiKey').value = LLM.cfg.key;
-    $('#apiModel').value = LLM.cfg.model;
+    $('#apiModelGen').value = LLM.cfg.modelGen;
+    $('#apiModelPlay').value = LLM.cfg.modelPlay;
     $('#apiEndpoint').value = LLM.cfg.endpoint;
     $('#cfgModal').classList.remove('hidden');
   };
   $('#cfgSave').onclick = () => {
-    LLM.save($('#apiKey').value, $('#apiModel').value, $('#apiEndpoint').value);
+    LLM.save($('#apiKey').value, $('#apiModelGen').value, $('#apiModelPlay').value, $('#apiEndpoint').value);
     refreshMode();
     $('#cfgModal').classList.add('hidden');
     newRun();

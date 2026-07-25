@@ -12,6 +12,11 @@
 
 <header id="topbar">
   <div class="brand">ECHO <span class="dim">/ <span id="placeName">未连接</span></span></div>
+  <div id="trust" class="hidden">
+    <span class="tlabel">它对你</span>
+    <span class="tbar"><i id="trustFill"></i></span>
+    <span id="trustNote" class="tnote">提防着你</span>
+  </div>
   <div class="tools">
     <button id="btnGuess" class="tbtn hl">说出你的判断</button>
     <button id="btnNew" class="tbtn">重开一局</button>
@@ -30,7 +35,8 @@
   <aside id="side">
     <div id="objHead">
       <div id="objName">—</div>
-      <div id="objSub">点击画面里的东西＝观察，不花时间。想做什么，在下面打出来。</div>
+      <div id="objSub">点击画面里的东西＝观察，不花时间。想做什么，在下面打出来。<br>
+      你不动的时候它也在动。让它对你松口，你能多看见一点。</div>
     </div>
     <div id="feed"></div>
   </aside>
@@ -79,8 +85,12 @@
       <input id="apiKey" type="password" placeholder="sk-...">
     </div>
     <div class="cfgRow">
-      <label>模型</label>
-      <input id="apiModel" type="text" placeholder="deepseek-v4-flash">
+      <label>开局／结算模型　<span class="dim">只调两次，决定整局质量</span></label>
+      <input id="apiModelGen" type="text" placeholder="deepseek-v4-pro">
+    </div>
+    <div class="cfgRow">
+      <label>回应／自主行动模型　<span class="dim">频繁调用，越快越好</span></label>
+      <input id="apiModelPlay" type="text" placeholder="deepseek-v4-flash">
     </div>
     <div class="cfgRow">
       <label>接口地址</label>

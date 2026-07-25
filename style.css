@@ -215,3 +215,24 @@ button,input{font-family:inherit}
 
 .tbtn:disabled{opacity:.35;cursor:not-allowed;border-color:var(--line);color:var(--amber-fade)}
 .tbtn:disabled:hover{border-color:var(--line);color:var(--amber-fade)}
+
+/* 戒备条 */
+#trust{display:flex;align-items:center;gap:8px;margin-left:24px}
+#trust.hidden{display:none}
+.tlabel{font-size:10px;letter-spacing:.14em;color:var(--amber-fade)}
+.tbar{display:inline-block;width:96px;height:5px;background:#151a19;border:1px solid var(--line)}
+.tbar i{display:block;height:100%;width:0;background:var(--amber);transition:width .9s ease}
+.tnote{font-size:10px;color:var(--amber-dim);letter-spacing:.08em;min-width:5em}
+
+/* 它自己动的那一段 */
+.entry.stir{border-left:2px solid var(--amber-fade);padding-left:11px}
+.entry.stir p{color:#a89880;font-style:italic}
+.entry.stir::before{
+  content:'它自己动了';display:block;
+  font-family:"Cascadia Mono",monospace;font-size:10px;letter-spacing:.14em;
+  color:var(--amber-fade);margin-bottom:3px;
+}
+/* 它让步的那一段 */
+.entry.grant{border-left:2px solid #7fd0a8;padding-left:11px;animation:fade .5s}
+.entry.grant .src{color:#7fd0a8}
+.entry.grant p{color:#d8ecd8}
