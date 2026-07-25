@@ -17,7 +17,7 @@ const G = {
   note: '',
   acts: [],         // 它做过的事，给玩家看的流水
   attempts: [],     // 猜过几次
-  cooldown: 0,      // 还要做几次行动才能再猜（猜错的代价，越猜越贵）
+  coolUntil: 0,     // 猜错后的冷却截止时间戳。冷却期间游戏照常，玩家继续查。
   focus: null,
   busy: false,
   ended: false,
@@ -113,19 +113,40 @@ function logAct(text){
   box.scrollTop = 1e9;
 }
 
-/* 冷却：猜错要拿行动去换下一次机会。观察不算——得真的去做点什么。 */
+/* 冷却：猜错之后它收回注意力一段时间。
+   这段时间里游戏照常——观察、行动、翻线索都不受影响，
+   所以玩家没有理由去刷无意义的动作，只管接着查。 */
+const COOL_BASE = 60, COOL_STEP = 30;   // 秒：60 / 90 / 120 …
+
+function coolLeft(){ return Math.max(0, Math.ceil((G.coolUntil - Date.now()) / 1000)); }
+
 function refreshGuessBtn(){
   const b = $('#btnGuess');
-  const n = G.attempts.length;
   if (G.ended){ b.disabled = true; b.textContent = '这一局结束了'; return; }
-  if (G.cooldown > 0){
+  const n = coolLeft();
+  if (n > 0){
     b.disabled = true;
-    b.textContent = `它不听了（还需 ${G.cooldown} 次行动）`;
+    b.textContent = `它不听了　${String(Math.floor(n / 60))}:${String(n % 60).padStart(2, '0')}`;
   } else {
-    b.disabled = false;
-    b.textContent = n ? `说出你的判断（第 ${n + 1} 次）` : '说出你的判断';
+    b.disabled = !G.gen;
+    const k = G.attempts.length;
+    b.textContent = k ? `说出你的判断（第 ${k + 1} 次）` : '说出你的判断';
   }
 }
+
+/* 每秒刷一次按钮上的倒计时；归零时它会说一句 */
+let coolTicking = false;
+setInterval(() => {
+  if (G.ended) return;
+  const n = coolLeft();
+  if (n > 0){ coolTicking = true; refreshGuessBtn(); }
+  else if (coolTicking){
+    coolTicking = false;
+    G.coolUntil = 0;
+    refreshGuessBtn();
+    say('它又开始听了。', 'sys');
+  }
+}, 1000);
 
 /* ================= 行动 ================= */
 
@@ -157,11 +178,6 @@ async function submit(){
   G.history.push(`「${intent}」→ ${r.narration.slice(0, 40)}`);
   G.note = r.note || G.note;
 
-  if (G.cooldown > 0){
-    G.cooldown--;
-    refreshGuessBtn();
-    if (G.cooldown === 0) say('它又开始听了。', 'sys');
-  }
 
   if (r.scene?.length){
     Render.patch(G.scene, r.scene);
@@ -230,12 +246,13 @@ async function doGuess(){
     return;
   }
 
-  /* 没说中：这一局继续，但要拿行动去换下一次机会。越猜越贵。 */
+  /* 没说中：它收回注意力一段时间。这一局继续，你接着查就是了。 */
   await sleep(700);
   showTemp(v.closeness | 0);
-  G.cooldown = 1 + G.attempts.length;
+  const wait = COOL_BASE + COOL_STEP * (G.attempts.length - 1);
+  G.coolUntil = Date.now() + wait * 1000;
   refreshGuessBtn();
-  say(`它把注意力收回去了。再开口之前，你得先做点什么——还需 ${G.cooldown} 次行动。`, 'sys');
+  say(`它把注意力收回去了，${wait} 秒内不会再听你说话。这段时间它照样在这儿——接着查。`, 'sys');
   busy(false);
 }
 
@@ -351,13 +368,13 @@ async function newRun(){
 
   Object.assign(G, {
     gen:null, sealed:null, scene:{ elements:[] }, hotspots:{},
-    history:[], note:'', acts:[], attempts:[], cooldown:0, focus:null, ended:false, censored:0,
+    history:[], note:'', acts:[], attempts:[], coolUntil:0, focus:null, ended:false, censored:0,
   });
   $('#feed').innerHTML = '';
   $('#scene').innerHTML = '';
   $('#clueList').innerHTML = '<span class="empty">—</span>';
   $('#objName').textContent = '—';
-  G.cooldown = 0;
+  refreshGuessBtn();
   $('#placeName').textContent = '正在生成';
   $('#focusTag').classList.add('hidden');
   $('#cmd').disabled = true;
@@ -486,7 +503,7 @@ function init(){
   $('#focusTag').onclick = clearFocus;
 
   $('#btnGuess').onclick = () => {
-    if (!G.gen || G.ended || G.cooldown > 0) return;
+    if (!G.gen || G.ended || coolLeft() > 0) return;
     $('#guessInput').value = '';
     $('#guessModal').classList.remove('hidden');
     $('#guessInput').focus();
