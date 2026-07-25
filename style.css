@@ -102,6 +102,17 @@ button,input{font-family:inherit}
 .entry.it .src{color:var(--amber)}
 .entry.it p{color:#f0dcb4}
 .entry.gain p{color:#7fd0a8;font-size:12px}
+/* 裁决挂在名字旁边：这是证据，不该只躺在本子里 */
+.vb{
+  margin-left:8px;padding:1px 7px;border:1px solid currentColor;border-radius:1px;
+  font-size:10px;letter-spacing:.08em;
+}
+.entry.bare{margin-bottom:11px}
+.entry.bare p{color:#3f3a31;font-size:12px}
+.nosay{font-style:normal}
+/* 本子里「无关」要压到最暗（那是留白），对话里得看得清（那是一次回答） */
+.vb.v-na{color:#6b7a72}
+.vb.v-mute{letter-spacing:.08em}
 /* 等回话的那几秒：提示落在回答会出现的地方，不在舞台角落 */
 .entry.pend p{color:var(--amber-fade);font-size:12px;letter-spacing:.06em}
 /* 回执：每一句花掉了什么、谁封着、哪个不认。压到最轻，但一直在 */
@@ -297,6 +308,7 @@ button,input{font-family:inherit}
 .cchip:hover{border-color:var(--amber-dim);color:var(--amber)}
 .cchip.on{border-color:var(--amber);color:var(--amber);background:rgba(224,164,74,.08)}
 .cchip.dead{opacity:.4;text-decoration:line-through}
+.cchip.itchip{color:var(--amber-dim);border-color:var(--amber-fade)}
 #sheetWho:empty{display:none}
 #sheetWho{margin-bottom:12px;padding:9px 11px;border-left:2px solid var(--amber-fade);background:rgba(224,164,74,.03)}
 .who{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}

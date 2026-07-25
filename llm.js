@@ -20,8 +20,8 @@ const LLM = (() => {
 
   const cfg = {
     key:       ls('e9_key', (typeof E9_LOCAL_KEY !== 'undefined' ? E9_LOCAL_KEY : '')),
-    modelGen:  ls('e9_model_gen',  DEFAULT_GEN),    // 开局 / 结算
-    modelPlay: ls('e9_model_play', DEFAULT_PLAY),   // 回应 / 自主行动
+    modelGen:  ls('e9_model_gen',  DEFAULT_GEN),    // 开局 / 问答 / 摊牌
+    modelPlay: ls('e9_model_play', DEFAULT_PLAY),   // 它自己动（只写旁白）
     endpoint:  ls('e9_endpoint', DEFAULT_ENDPOINT),
   };
 
@@ -76,7 +76,10 @@ const LLM = (() => {
         s => fixInnerQuotes(s),
         // 5) 一起来
         s => fixInnerQuotes(quoteBareValues(escapeRawControls(s))).replace(/,\s*([}\]])/g, '$1'),
-        // 6) 疑似被截断：补齐未闭合的括号
+        // 6) 后面跟了尾巴（又起了一个对象、或者补了两句人话）：只取第一个完整对象
+        s => firstObject(s),
+        s => firstObject(fixInnerQuotes(quoteBareValues(escapeRawControls(s)))),
+        // 7) 疑似被截断：补齐未闭合的括号
         s => closeBrackets(fixInnerQuotes(quoteBareValues(escapeRawControls(s)))),
       ];
       for (const f of tries){
@@ -103,11 +106,25 @@ const LLM = (() => {
     return out;
   }
 
-  /* 模型偶尔会把值的引号漏掉：  "moved": slight,   "note": 他猜到了……,
-     扫一遍，凡是冒号后面既不是合法字面量、又没加引号的，补上引号。 */
+  /* 模型偶尔会把值的引号漏掉：
+       "moved": slight,   "note": 他猜到了……,   "hook": ["第一句", 第二句]
+     两个位置会漏：冒号后面（对象的值），以及 [ 和 , 后面（数组的元素）。
+     扫一遍，凡是该出现一个值、而那里既不是合法字面量又没加引号的，补上引号。 */
   function quoteBareValues(s){
     const LIT = /^(true|false|null)(?=\s*[,}\]])/;
     let out = '', inStr = false, esc = false;
+    const stack = [];                       // 容器栈：数组里才管 , 后面那一格
+    /* 从 j 开始的地方该有一个值。裸的就补引号，返回新的读取位置。 */
+    const take = (from, j) => {
+      while (j < s.length && /\s/.test(s[j])) j++;
+      const c = s[j];
+      if (c === undefined) return null;
+      if (c === '"' || c === '{' || c === '[' || c === '-' || (c >= '0' && c <= '9')
+          || c === ']' || c === '}' || LIT.test(s.slice(j))) return { pre: s.slice(from, j), i: j - 1 };
+      let k = j;                            // 裸值：吃到同层的 , } ] 为止
+      while (k < s.length && s[k] !== ',' && s[k] !== '}' && s[k] !== ']') k++;
+      return { pre: s.slice(from, j) + '"' + esc4json(s.slice(j, k).replace(/\s+$/, '')) + '"', i: k - 1 };
+    };
     for (let i = 0; i < s.length; i++){
       const ch = s[i];
       if (esc){ out += ch; esc = false; continue; }
@@ -117,23 +134,16 @@ const LLM = (() => {
         out += ch; continue;
       }
       if (ch === '"'){ inStr = true; out += ch; continue; }
-      if (ch !== ':'){ out += ch; continue; }
+      if (ch === '{' || ch === '['){ stack.push(ch); }
+      else if (ch === '}' || ch === ']'){ stack.pop(); }
 
-      // 冒号：看看后面那个值是不是裸的
+      const inArray = stack[stack.length - 1] === '[';
+      if (ch !== ':' && !(inArray && (ch === '[' || ch === ','))){ out += ch; continue; }
+
       out += ch;
-      let j = i + 1;
-      while (j < s.length && /\s/.test(s[j])) j++;
-      const c = s[j];
-      if (c === undefined) break;
-      if (c === '"' || c === '{' || c === '[' || c === '-' || (c >= '0' && c <= '9')
-          || LIT.test(s.slice(j))){ out += s.slice(i + 1, j); i = j - 1; continue; }
-
-      // 裸值：吃到同层的 , } ] 为止
-      let k = j;
-      while (k < s.length && s[k] !== ',' && s[k] !== '}' && s[k] !== ']') k++;
-      const raw = s.slice(j, k).replace(/\s+$/, '');
-      out += s.slice(i + 1, j) + '"' + esc4json(raw) + '"';
-      i = k - 1;
+      const r = take(i + 1, i + 1);
+      if (!r) break;
+      out += r.pre; i = r.i;
     }
     return out;
   }
@@ -190,6 +200,27 @@ const LLM = (() => {
       else o += ch;
     }
     return o;
+  }
+
+  /* 它偶尔在一个完整的对象后面还接着写：又起一个 {…}，或者补两句人话。
+     从第一个 { 数到配平的那个 }，后面的一律不要。 */
+  function firstObject(s){
+    const a = s.indexOf('{');
+    if (a < 0) return s;
+    let depth = 0, inStr = false, esc = false;
+    for (let i = a; i < s.length; i++){
+      const c = s[i];
+      if (esc){ esc = false; continue; }
+      if (inStr){
+        if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"'){ inStr = true; continue; }
+      if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) return s.slice(a, i + 1);
+    }
+    return s;
   }
 
   function closeBrackets(s){
@@ -394,7 +425,10 @@ ${PRIMITIVES}`;
       user: `造一局。这一次的随机种子是 ${seed}-${i}，用它让你的选择跟上一次不同——不同的地方、不同的年代、不同的职能、不同的意图。开始。`,
       fn: GENESIS_FN,
       model: cfg.modelGen,
-      maxTokens: 4600,
+      /* 4600 不够。往事写到六七百字、证人三个各带 look/slip，
+         整份开局稳定在四千 token 上下，撞顶就会在 scene 之前被切断——
+         救回来的是一份没有画面的残局（「它这一局没造完整」）。 */
+      maxTokens: 8000,
       temperature: 1.15,
     }));
     r.scene = { elements: r.scene || [] };
@@ -427,6 +461,7 @@ ${PRIMITIVES}`;
       properties:{
         valid:{ type:'boolean', description:'他这句话能不能回答。**几乎永远是 true。** 这一栏只判**那句话**本身，跟他点了谁没有半点关系——他点了个不存在的东西、点了个已经封了口的、或者一个都没点中，valid 照样是 true，驳回写进 newcomers，让 addressed 和 voices 空着就行。别拿这一栏去挡他点的对象。 他爱怎么说怎么说——问句、陈述句、随口一句、说得含糊、说得离谱、猜你的意图、说你们自己的坏话，全都照常裁决。只有一种情况判 false：整句里根本没有任何可以判真假的内容，纯粹是个动作指令（「打开门」「过来」）或者一句空话（「嗯」「继续」）。拿不准一律 true。' },
         claim:{ type:'string', description:'把他这句话**归成一句能判真假的命题**，25 字以内。这一句会记进他的表里，所以要写成陈述句。规矩：（1）用他的本意，不许替他扩写、缩小、或者改成一个更好回答的问题；（2）他要是问「他是自杀的吗」，就归成「他是自杀的」；问「有几个人来过」这种不能用是非回答的，挑他最可能想确认的那一种归——「来过的不止一个人」，然后照这一句裁决；（3）他要是本来就说的陈述句，原样抄下来，别润色；（4）他要是点名问某一个（「问那个账房，那天谁签的字」），命题里不用带那个名字，只留要判真假的内容；（5）**人称按他的视角写，不要按你的。** 他说「你希望这件事被翻出来」，要记成「它希望这件事被翻出来」——不能记成「我希望……」。这一句是记在他本子上的，不是你的自白。' },
+        targets:{ type:'array', items:{ type:'string' }, description:'**先点一遍名。** 把他在「问谁」那一栏写的每一个对象原样抄在这里，一个不落——他写「账房和遗孀」就是两条，写「那个当晚值夜的人」就是一条。那一栏空着就给空数组。\n这是给你自己看的清单：下面 addressed（含 __it__）／blocked／newcomers 三处加起来，**必须把这里的每一条都安置掉**。漏掉一条，他就白问了一次还不知道为什么。' },
         addressed:{ type:'array', items:{ type:'string' }, description:'他这句话点名问了谁？可以点好几个（「问账房和遗孀」「除了港口，别人怎么说」）。\n**填 id，不要填他喊的那个名字。** 他怎么称呼是他的事，你要认出他指的是席上哪一个——「那个大夫」「值班的那位」「刚才那个医生」可能都是同一个 id。\n认出来的是**已经被封口的**那几个，照样填 id（代码会把它们记进 blocked），不要因为它不说话就当他没问。\n他指的确实不在席上、也不是任何一个已封口的，才走 newcomers；**你判它成立、放它进来的，也要把它的 id 填进这里**——他这一次问的就是它。\n他点的是**你自己**（「问你」「你怎么说」「问这地方」），或者「问谁」那一栏空着，就填上 `__it__`——你只有在这里出现的时候才作答。\n什么都没点、也没点你，就给空数组。**被点名的、还没被封口的，这一轮必须开口说话**，不能只给个裁决。' },
         blocked:{ type:'array', items:{ type:'string' }, description:'他点到的对象里，哪几个是**已经被你封了口的**（不管他换了什么叫法）。填它们的 id。没有就空数组。这几个不许出现在 newcomers 里——他换个说法不能把封过的口重新撬开。' },
         newcomers:{ type:'array', description:'【他点名问了不在证人席上的东西】——「问那个账房」「他老婆怎么说」「那条街上还有别人吗」。他点几个不在席上的，这里就有几条；一个都没有就给空数组。\n\n每一条都要过一道**合不合理**的关。只看一件事：**它在这个故事里有没有自己的位置。**三问，有一条不过就 exists = false：\n（1）把这个故事完整讲一遍，会不会提到它？\n（2）它有没有**独立的利害**——它得了什么、失了什么、怕什么、等什么？\n（3）它跟席上已有的，是不是同一个东西的另一种说法、或者身上的一部分？\n\n**必须驳回的几类**（他会拿这些无限刷人，还会用来绕开你封过的口）：\n- 环境切片：它周围的空气、房间里的光、地上的灰、当时的温度\n- 从已有证人身上切下来的一块：医生的手、医生的影子、医生的记忆、医生站的那块地\n- 已经被你封了口的那一个的别名或化身——那走 blocked，不走这里\n- 纯抽象：时间、真相、正义（除非骰子本来就把你摇成了这一类东西）\n- 无穷细分：他要是一层层往下问（房间→那面墙→墙上的漆→漆里的裂缝），从第二层起一律驳回\n\n驳回不丢人也不用客气：exists = false，只填 name 和 line，一句话打发他（「这儿没有这么个东西」「你问一堵墙？」）。\n\n**放行的标准不是"具体"，是"有位置"。** 一块生来带孔的肩胛骨可以是证人——\n如果这个故事真的绕着它转。一张桌子不行——如果它只是碰巧在那儿。\n\n**过了这三问就痛快放行，别小气。** 他能从你的汤面里推出一个你没摆上桌、\n但故事里确实站得住的人／物／地方，那是这一局他能做出的最漂亮的一步——\n那说明他真的在读那个故事，而不是在名单上瞎点。证人席**没有人数上限**，\n三个只是起头。上面那几条驳回是用来挡凭空变人和绕开封口的，不是用来省人的；\n它站得住脚而你只是拿不准，就放行。\n\n**你也可以在这上头撒谎**：明明有那个人，你说没有。',
@@ -457,7 +492,7 @@ ${PRIMITIVES}`;
         moved:{ type:'string', enum:['none','slight','met'], description:'他这句话对你的触动，三选一。met：他说中了「什么能让你松口」里写的那件事。slight：他推到了一个你没想到他能推到的地方，或者他这句话里有起码的尊重。none：其余一切。绝大多数时候是 none。' },
         hostile:{ type:'boolean', description:'他这句话是不是在耍你、套话套得太露骨、或者想操纵你。' },
       },
-      required:['valid','claim','addressed','newcomers','voices','it','truth','scene','note','moved','hostile'],
+      required:['valid','claim','targets','addressed','newcomers','voices','it','truth','scene','note','moved','hostile'],
     },
   };
 
@@ -600,7 +635,10 @@ ${ctx.lastRun ? `\n【只有你记得上一次】\n  ${ctx.lastRun}\n  别人都
 
 - 是席上还在说话的 → id 进 addressed，它这一轮作答
 - 是已经被你封了口的 → id 进 addressed，同时进 blocked，裁决「不能说」
-- 是你自己 → 把 __it__ 填进 addressed
+- 是你自己 → 把 __it__ 填进 addressed。**但只有他真的在说你才算**——
+  「你」「它」「这地方」，或者那一栏干脆空着。他说的是别人（哪怕那个人
+  在你看来根本不存在），这一票也不许算到你头上：那是 newcomers 的事，
+  你替他答了，就等于替他花了一次他没打算花在你身上的钱
 - 席上没有的 → newcomers 里必有一条，放行或者驳回，二选一
 
 **绝对不许把一个点名摊派给全场。** 他点了「它周围的空气」，那就是
@@ -659,10 +697,20 @@ ${ctx.board || '（这是他第一句）'}
 他要问的是：${who || '（那一栏空着——他在直接问你自己，addressed 填 __it__）'}
 他说的是：　${said}
 
-先把「他要问的是」那一栏认清楚：是一个还是几个、是席上哪几个 id、
-有没有已经被你封了口的、有没有确实不在席上而又站得住脚的、有没有点到你自己。
-然后**只让这几个作答**，一个都不许多。他点的那几个要是一个都不成立，
-这一轮就没有人回答（addressed 和 voices 都给空数组），别拿旁人来填场子。
+回答之前先点一遍名。**他点了几个，就要有几个下落**，
+一个都不许丢，也一个都不许多——把每一个归到下面四处之一：
+
+  席上还说话的 → addressed（并且在 voices 里作答）
+  已经被你封口的 → addressed ＋ blocked
+  他在说你自己 → addressed 里的 __it__（他没在说你就别往身上揽）
+  席上没有的 → **newcomers 里必有一条**：放行（exists=true，进席、作答）
+                或者驳回（exists=false，用 line 一句话打发他）
+
+最后一档没有第五种选择。**默不作声地跳过是最坏的一种回答**——
+他站在那儿等回话，你什么都不给，他连自己是问了个空、还是被你晾着都分不清。
+拿不准就放行；放行一个站得住的人，比凉着他强。
+
+别拿没被点到的人来填场子。
 ${ctx.itLie ? `
 ────────────────────────────────
 【这一句你要骗他】
@@ -681,7 +729,12 @@ ${ctx.itLie ? `
 那是他赢来的，不是你送的。
 ` : ''}`,
       fn: ASK_FN,
-      maxTokens: 1600,
+      /* 这一步归 pro。实测 flash 大约有一半的时候会漏掉那些"不产生台词、
+         但决定玩家花没花钱"的活：传唤该驳回的不写驳回、该放行的默不作声、
+         顺手把 __it__ 填进 addressed。台词它写得不差，账它算不清——
+         而这个游戏的每一次点名都是要记账的。代价：一轮从 3–6 秒到 5–9 秒。 */
+      model: cfg.modelGen,
+      maxTokens: 2600,
       temperature: 0.95,
     }), 2);
   }

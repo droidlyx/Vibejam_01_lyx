@@ -11,6 +11,8 @@ new Function('g', read('data.js') + '\n' + read('llm.js') +
   '\ng.LLM=LLM;g.VERDICT_KEYS=VERDICT_KEYS;')(box);
 const { LLM, VERDICT_KEYS } = box;
 LLM.cfg.key = read('deepseek_apikey').trim();
+/* PLAY=pro node tools/turtle.js —— 拿问答那一步换个模型跑，比一比 */
+if (process.env.PLAY) LLM.cfg.modelPlay = 'deepseek-v4-' + process.env.PLAY;
 
 const C = { d:'\x1b[2m', y:'\x1b[33m', g:'\x1b[32m', r:'\x1b[31m', c:'\x1b[36m', x:'\x1b[0m' };
 const pad = (s, n) => { let w = 0; for (const ch of s) w += ch.charCodeAt(0) > 255 ? 2 : 1;
@@ -105,9 +107,10 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
 
     const vs = {};
     for (const v of kept) vs[v.id] = v;
-    /* 它那一票也走同一条规矩：「无关」＋不吭声＝没答上话，不收钱 */
-    const atIt = ((r.addressed || []).includes('__it__') || !who)
-              && (((r.it?.verdict || '无关') !== '无关') || !!(r.it?.line || '').trim());
+    /* 跟 game.js 的 wantsIt 一样：点没点它由代码认。模型爱把 __it__
+       顺手填上，那等于替玩家花钱。 */
+    const saidIt = !who || /(^|[、,，;；\s])(它|你|它自己|你自己|这地方|这里|这个地方)([、,，;；\s]|$)/.test(who);
+    const atIt = saidIt && ((r.addressed || []).includes('__it__') || !who);
     const addressed = (r.addressed || []).filter(id => cast.some(h => h.id === id));
     const names = Object.fromEntries(cast.map(h => [h.id, h.name]));
     for (const h of cast){
@@ -120,8 +123,9 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
     console.log(`  ${pad('它自己', 12)} ${atIt ? C.c + r.it?.verdict : C.d + '（没点它，不作答）'}${C.x}  ${C.d}${(atIt && r.it?.line) || ''}${C.x}`);
     console.log(`  ${C.d}实情：${r.truth ? '这句是真的' : '这句不是真的'}${C.x}`);
 
-    /* 计费跑的是 game.js 那一套：只有真答上话的才扣 */
-    const spent = new Set(Object.keys(vs).filter(id => names[id])).size + (atIt ? 1 : 0);
+    /* 计费跑的是 game.js 那一套：只有真给了立场的才扣，「无关」白问 */
+    const spent = Object.keys(vs).filter(id => names[id] && vs[id].verdict !== '无关').length
+                + (atIt && (r.it?.verdict || '无关') !== '无关' ? 1 : 0);
     tally.spent += spent;
     console.log(`  ${C.d}这一句花掉 ${spent} 次，累计 ${tally.spent}／10${
                   tally.spent >= 10 ? C.r + '　它该出手了' : ''}${C.x}`);
