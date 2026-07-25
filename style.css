@@ -224,15 +224,6 @@ button,input{font-family:inherit}
    汤面 —— 一段说不通的故事，钉在正文上头
    每一句都是真的，而且整局不变：玩家唯一的地基。
    ============================================================ */
-#hook{
-  flex:0 0 auto;padding:11px 16px 13px;border-bottom:1px solid var(--amber-fade);
-  background:linear-gradient(180deg,rgba(224,164,74,.06),transparent);
-}
-#hook.hidden{display:none}
-.hkh{
-  font-family:"Cascadia Mono",monospace;font-size:10px;letter-spacing:.2em;
-  color:var(--amber);margin-bottom:6px;
-}
 .hkb{font-size:14px;line-height:1.9;color:#f0dcb4}
 /* 开局在正文里念一遍 */
 .entry.hookline{border-left:2px solid var(--amber);padding-left:11px}

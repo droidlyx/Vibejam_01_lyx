@@ -27,9 +27,8 @@ var G = window.G = {
   granted: false,
   stirs: 0,
   stirLog: [],      // 它自己动过什么，喂回给它——不然它会封第三次同一张嘴
-  sinceStir: 0,
-  lastSilenceAt: -99, // 上一次封口是第几句——封得太密这一局就废了
-  lastAct: 0,
+  questioned: {},   // id -> 他点名问过它几次。它自己动的时候从这里面抽人。
+  askedCount: 0,    // 攒够几次点名，它就出手一次。按提问算，不按时间。
   filter: null,     // 本子上只看某一个证人
   busy: false,
   stirring: false,  // 它自己动那条线是异步的，跟他的输入互不阻塞
@@ -93,14 +92,10 @@ function flick(){
 /* ================= 汤面 =================
    海龟汤靠一个说不通的故事开局——「男人喝了一口海龟汤，回家就上吊了」。
    没有它，玩家坐在那儿不知道该问什么。
-   这一段每一句都是真的，而且整局不变：他唯一的地基。 */
+   这一段每一句都是真的，而且整局不变：他唯一的地基。
 
-function renderHook(){
-  const box = $('#hook');
-  if (!G.hook.length){ box.classList.add('hidden'); return; }
-  box.classList.remove('hidden');
-  box.innerHTML = `<div class="hkh">汤面</div><div class="hkb">${escapeHtml(G.hook.join(''))}</div>`;
-}
+   不在侧栏常驻挂着——开局它自己讲一遍就够了，要回头看就翻本子。
+   常驻一块面板反而把画面挤没了，而且那段话读一遍就记住了。 */
 
 /* ================= 场景 =================
    这幅画是汤面那一刻的插图，不是他现在待的房间。不可点——
@@ -185,7 +180,6 @@ async function sayClaim(){
   if (!said || G.busy || G.ended || !G.gen) return;
 
   box.value = '';
-  clearTimeout(idleTimer);
   say(said, 'claim', `第 ${G.qi + 1} 句`);
   busy(true, '……');
 
@@ -199,18 +193,34 @@ async function sayClaim(){
     }, said);
   }catch(err){
     say('（没有回应：' + err.message + '）', 'sys');
-    busy(false); touch(); return;
+    busy(false); return;
   }
   busy(false);
 
   if (r.valid === false){
     say('这句话没法回答。里面得有一件能判真假的事——问句、说法都行。\n比如「他是自杀的吗」「那扇门是从里面锁上的」「问账房，那天谁签的字」。', 'sys');
-    touch();
     return;
   }
 
-  /* 他点名问了席上没有的——它来决定那东西存不存在 */
+  /* 他点名问了席上没有的——它来决定那东西存不存在。
+     已经封过口的不许借新名字复活：模型认人（「那个大夫」＝「医生」），
+     代码兜底（凡是已封的 id，一律不许再进证人席）。 */
   await admitNewcomers(r.newcomers);
+
+  /* 他点了谁的名——它自己动的时候就从这些人里抽 */
+  const hit = new Set();
+  for (const a of [...(r.addressed || []), ...(r.blocked || [])]){
+    const h = G.cast.find(c => c.id === a);
+    if (h) hit.add(h.id);
+  }
+  for (const id of hit) G.questioned[id] = (G.questioned[id] || 0) + 1;
+  G.askedCount += hit.size || 1;      // 没点名＝广播，算一次
+
+  /* 换个叫法想撬开封过的口，当面驳回 */
+  for (const id of (r.blocked || [])){
+    const h = G.cast.find(c => c.id === id);
+    if (h && G.silenced.includes(id)) say(`「${h.name}」还是不说话。`, 'sys deny');
+  }
 
   const claim = String(r.claim || said).trim() || said;
   if (claim !== said) say(claim, 'norm', '记作');
@@ -272,11 +282,9 @@ async function sayClaim(){
   }
   await maybeGrant();
 
-  /* 他往前查一步，它就往前推一步。异步——几秒后它的动作自己落下来，
-     那时他已经在想下一句了。 */
-  G.sinceStir++;
-  if (G.sinceStir >= 2){ G.sinceStir = 0; doStir(); }
-  touch();
+  /* 他点几个名就算几次。攒够了它就出手——异步，
+     几秒后那一口自己哑下去，那时他已经在想下一句了。 */
+  maybeStir();
 }
 
 /* 他点名问了一个不在席上的东西。存不存在，它说了算——它也可以撒谎。 */
@@ -290,6 +298,8 @@ async function admitNewcomers(list){
     }
     const id = String(n.id || '').trim() || ('x' + G.cast.length);
     if (G.cast.some(h => h.id === id)) continue;
+    /* 代码兜底：封过的口不许换个名字重新开张。模型认人失手也拦得住。 */
+    if (G.silenced.some(sid => sid === id)) continue;
     G.cast.push({
       id, name: n.name, what: n.what || '物', stake: n.stake || '',
       look: n.look || '', mind: n.mind || '', toward: n.toward || '不在乎',
@@ -338,26 +348,42 @@ async function maybeGrant(){
 }
 
 /* ================= 它自己动 =================
-   只有一件事：封掉一个证人的口。看得见、有代价、逼出"先问谁"的真决策。
-   不占用他的输入——两条线同时走。 */
+   它出手只有一件事：让一个证人从此闭嘴。
 
-let idleTimer = null;
-const IDLE_STEPS = [34000, 48000, 66000];
+   触发按**点名次数**算，不按时间——你问几个对象就算几次。挂在时钟上
+   会奖励发呆的人，挂在提问上才是"你查一步，它挡一步"。
 
-function scheduleStir(){
-  clearTimeout(idleTimer);
-  if (G.ended || !G.gen || !LLM.online()) return;
-  idleTimer = setTimeout(() => doStir({ idle:true }), IDLE_STEPS[Math.min(G.stirs, 2)]);
+   挑谁**由代码随机挑**，而且只从他真正点名问过的里面挑。让模型挑，
+   它每次都精准掐掉最要命的那一个，玩家会觉得被针对；代码随机挑，
+   丢掉的是他自己押注最重的那几张嘴之一——同样疼，但公平。 */
+
+const STIR_EVERY = 4;    // 累计点名到这个数，它出手一次
+const KEEP_ALIVE = 3;    // 手上至少给他留这么多张嘴
+
+/* 只从他点名问过的里面挑，权重＝问过的次数：他越指望谁，越可能丢谁 */
+function pickVictim(){
+  if (G.cast.length - G.silenced.length <= KEEP_ALIVE) return null;
+  const pool = [];
+  for (const [id, times] of Object.entries(G.questioned)){
+    if (G.silenced.includes(id)) continue;
+    const h = G.cast.find(c => c.id === id);
+    if (!h) continue;
+    for (let i = 0; i < times; i++) pool.push(h);
+  }
+  if (!pool.length) return null;
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function touch(){
-  G.lastAct = Date.now();
-  G.stirs = 0;
-  scheduleStir();
+async function maybeStir(){
+  if (G.askedCount < STIR_EVERY) return;
+  const victim = pickVictim();
+  if (!victim) return;              // 没人可封就攒着，等他多点几个名
+  G.askedCount = 0;
+  doStir(victim);                   // 异步，不挡他下一句
 }
 
-async function doStir(opts){
-  if (G.stirring || G.ended || !G.gen) { scheduleStir(); return; }
+async function doStir(victim){
+  if (G.stirring || G.ended || !G.gen) return;
   G.stirring = true;
   $('#itMoving').classList.remove('hidden');
 
@@ -367,25 +393,29 @@ async function doStir(opts){
       scene: G.scene.elements, note: G.note, board: boardForPrompt(),
       cast: G.cast, hook: G.hook, silenced: G.silenced,
       trust: G.trust, granted: G.granted, stirs: G.stirs, stirLog: G.stirLog,
-      canSilence: canSilence(),
-      idleSec: opts?.idle ? Math.round((Date.now() - G.lastAct) / 1000) : null,
+      target: { name:victim.name, what:victim.what, stake:victim.stake,
+                times: G.questioned[victim.id] || 1 },
     });
   }catch(err){
     console.warn('[stir] 失败', err.message);
-    G.stirring = false; $('#itMoving').classList.add('hidden'); scheduleStir(); return;
+    G.stirring = false; $('#itMoving').classList.add('hidden'); return;
   }
   G.stirring = false;
   $('#itMoving').classList.add('hidden');
   if (G.ended) return;
 
+  /* 封口是代码执行的，模型只写了它怎么发生 */
+  G.silenced.push(victim.id);
   G.stirs++;
-  G.stirLog.push(`[${r.move || '按兵'}] ` + deId(r.narration).slice(0, 46));
+  G.stirLog.push(`封了「${victim.name}」：` + deId(r.narration).slice(0, 40));
   if (G.stirLog.length > 4) G.stirLog.shift();
   G.note = r.note || G.note;
-  say(deId(r.narration), 'stir');
-  G.history.push(`（它自己动了：${deId(r.narration).slice(0, 26)}）`);
 
-  applyMove(r);
+  say(deId(r.narration), 'stir');
+  say(`「${victim.name}」不说话了。以后问它什么都是一样的——换个叫法也没用。`, 'sys deny');
+  G.history.push(`（它封了「${victim.name}」的口）`);
+  refreshSheetBtn();
+  if (!$('#sheetModal').classList.contains('hidden')) renderSheet();
 
   if (r.scene?.length){ Render.patch(G.scene, r.scene); drawScene(); }
   if (r.it_line && r.it_line.trim()){
@@ -395,34 +425,6 @@ async function doStir(opts){
     say(c.html, 'it', (G.gen.place || '').slice(0, 12));
   }
   flick();
-  scheduleStir();
-}
-
-/* 它这一步削掉了你什么。只有封口一种——它自己动如果只改改画面，
-   那就是氛围，不是对手。
-
-   刻度归代码：模型放开了封，四句之内能把五个证人封掉三个，这一局就废了。
-   两道闸——手上至少给他留三张嘴，而且封一次要隔三句。
-   模型判断"封谁"，代码决定"封得起吗"。 */
-const KEEP_ALIVE = 3, SILENCE_GAP = 3;
-
-function canSilence(){
-  return (G.cast.length - G.silenced.length) > KEEP_ALIVE
-      && (G.qi - G.lastSilenceAt) >= SILENCE_GAP;
-}
-
-function applyMove(r){
-  if (String(r.move || '') !== '封口') return;
-  const id = String(r.target || '').trim();
-  const h = G.cast.find(c => c.id === id);
-  if (!h || G.silenced.includes(id)) return;
-  if (!canSilence()) return;          // 封不动了，这一步就只剩画面上那点动静
-  G.silenced.push(id);
-  G.lastSilenceAt = G.qi;
-  say(`「${h.name}」不说话了。以后问它什么都是一样的。`, 'sys deny');
-  G.history.push(`（它封了「${h.name}」的口）`);
-  refreshSheetBtn();
-  if (!$('#sheetModal').classList.contains('hidden')) renderSheet();
 }
 
 /* ================= 摊牌 =================
@@ -499,7 +501,6 @@ async function doShowdown(){
 
   if (pass){
     G.ended = true;
-    clearTimeout(idleTimer);
     $('#cmd').disabled = true;
     refreshShowBtn();
     await sleep(1600);
@@ -532,7 +533,6 @@ async function giveUp(){
   if (G.ended || !G.gen) return;
   $('#showModal').classList.add('hidden');
   G.ended = true;
-  clearTimeout(idleTimer);
   $('#cmd').disabled = true;
   refreshShowBtn();
   say('你不问了。', 'sys');
@@ -551,6 +551,9 @@ function reveal(pass, v, hit){
   const trues = G.board.filter(r => r.truth).length;
 
   $('#endBody').innerHTML = `
+    <div class="reveal"><div class="rl">它想从你这里得到的（开局封存，从没说出口）</div>
+      <div class="rt big">${escapeHtml(G.sealed)}</div></div>
+
     <div class="reveal"><div class="rl">它在这一局开始之前就写好的全部答案，封存至今</div>
       ${G.riddles.map((r, i) => `<div class="ans${hit[i] ? ' got' : ''}">
         <div class="aq">${hit[i] ? '✓' : '　'} ${escapeHtml(r.q)}</div>
@@ -645,12 +648,11 @@ async function newRun(){
   Object.assign(G, {
     gen:null, sealed:null, hook:[], scene:{ elements:[] }, cast:[], silenced:[],
     board:[], qi:0, riddles:[], answers:{}, attempts:0, coolUntil:0,
-    note:'', history:[], trust:0, granted:false, stirs:0, stirLog:[], sinceStir:0,
-    lastSilenceAt:-99, lastAct:Date.now(), filter:null, ended:false, censored:0,
+    note:'', history:[], trust:0, granted:false, stirs:0, stirLog:[],
+    questioned:{}, askedCount:0, filter:null, ended:false, censored:0,
   });
   $('#feed').innerHTML = '';
   $('#scene').innerHTML = '';
-  renderHook();
   refreshSheetBtn();
   refreshShowBtn();
   $('#placeName').textContent = '正在生成';
@@ -689,18 +691,15 @@ async function newRun(){
   G.scene = g.scene;
   G.cast = g.cast;
 
-  /* 全部答对才算过，不分主次 */
-  G.riddles = [
-    { q: FINAL_QUESTION, sealed: String(g.intent) },
-    ...(g.riddles || []).slice(0, 3).map(r => ({
-      q: String(r.question || '').trim(), sealed: String(r.answer || '').trim(),
-    })).filter(r => r.q && r.sealed),
-  ];
+  /* 全部答对才算过，不分主次。
+     不再硬塞一道「它想要什么」——那道题只有在它本身就是关节的时候才该出现，
+     由它自己决定。它的意图照样封存，照样在揭晓时亮出来。 */
+  G.riddles = (g.riddles || []).slice(0, 5).map(r => ({
+    q: String(r.question || '').trim(), sealed: String(r.answer || '').trim(),
+  })).filter(r => r.q && r.sealed);
 
   bootDone();
-  G.lastAct = Date.now();
   renderTrust();
-  renderHook();
   refreshSheetBtn();
   refreshShowBtn();
   $('#placeName').textContent = (g.place || '').split(/[。，,]/)[0].slice(0, 22);
@@ -711,7 +710,6 @@ async function newRun(){
   if (G.hook.length) say(G.hook.join(''), 'hookline', '它讲了这么一件事');
   await sleep(400);
   say('随便问。问句、说法、猜测都行，也可以点名：「问账房，那天谁签的字」——\n哪怕那个人不在证人席上。\n\n场上每一个各自回答 是／不是／无关，或者答不上来。它们互相不合，谁都可能骗你。', 'sys');
-  scheduleStir();
   $('#cmd').disabled = false;
   $('#cmd').focus();
   console.log('[封存]', G.sealed, '\n[往事]', g.past);
@@ -764,6 +762,7 @@ function runDemo(){
   G.gen = DEMO; G.sealed = DEMO.intent;
   G.scene = DEMO.scene; G.cast = DEMO.cast; G.hook = DEMO.hook;
   G.silenced = ['watch'];
+  G.questioned = { purser:2, widow:3, watch:1 };
   DEMO_ROWS.forEach(([claim, ...vs]) => {
     const verdicts = {}, lines = {};
     G.cast.forEach((c, j) => { verdicts[c.id] = vs[j] || '无关'; });
@@ -772,9 +771,9 @@ function runDemo(){
   });
   G.board[0].lines = { widow:'签收簿上有两个手印，一个是湿的。' };
   G.board[1].lines = { watch:'他的靴子是干的。下过船的人靴子不可能是干的。' };
-  G.riddles = [{ q:FINAL_QUESTION, sealed:'（自检）' }];
+  G.riddles = [{ q:'那晚下船的为什么多一个人？', sealed:'（自检）' }];
   $('#placeName').textContent = '渲染自检';
-  drawScene(); renderHook(); refreshSheetBtn(); refreshShowBtn();
+  drawScene(); refreshSheetBtn(); refreshShowBtn();
   say(DEMO.opening);
   say(DEMO.hook.join(''), 'hookline', '它讲了这么一件事');
   say('图元清单：' + Render.KINDS.join('、') + '\n点右上角「本子」看记录长什么样。', 'sys');
