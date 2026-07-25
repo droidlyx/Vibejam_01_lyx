@@ -20,7 +20,6 @@ var G = window.G = {
   riddles: [],      // 要答的题。**全部答对才算过**，不分主次。
   answers: {},      // 他填过的答案，留着，下次摊牌接着改
   attempts: 0,
-  coolUntil: 0,     // 摊牌没过之后它收回注意力的截止时刻
   note: '',
   history: [],
   trust: 0,
@@ -77,7 +76,7 @@ function typeInto(el, text){
 
 function busy(on, label){
   G.busy = on;
-  $('#cmd').disabled = on || G.ended || !LLM.online();
+  $('#cmd').disabled = $('#who').disabled = on || G.ended || !LLM.online();
   const t = $('#thinking');
   t.classList.toggle('hidden', !on);
   if (on) t.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span> ' + (label || '');
@@ -143,7 +142,14 @@ function renderSheet(){
   }
 
   const who = G.filter ? G.cast.filter(h => h.id === G.filter) : G.cast;
-  $('#sheetBoard').innerHTML = G.board.map((row, i) => {
+  /* 筛某一个的时候，它没被问到的那几句直接不显示——那些跟它无关 */
+  const rows = G.board.map((row, i) => ({ row, i }))
+    .filter(({ row }) => !G.filter || row.verdicts[G.filter]);
+  if (!rows.length){
+    $('#sheetBoard').innerHTML = '<div class="bempty">你还没问过它。</div>';
+    return;
+  }
+  $('#sheetBoard').innerHTML = rows.map(({ row, i }) => {
     const lines = who.map(h => {
       const v = row.verdicts[h.id];
       if (!v) return '';
@@ -163,6 +169,35 @@ function renderSheet(){
   }).join('');
 }
 
+/* 输入框底下那一排名字：点一下就填进「问谁」。
+   只有三个起手的，剩下靠他自己问出来——所以这一排是会变长的。 */
+function renderCastRow(){
+  const box = $('#castRow');
+  if (!G.cast.length){ box.innerHTML = ''; return; }
+  const live = G.cast.filter(h => !G.silenced.includes(h.id));
+  const dead = G.cast.filter(h => G.silenced.includes(h.id));
+
+  box.innerHTML =
+    live.map(h => `<span class="nchip" data-n="${escapeHtml(h.name)}"
+        title="${escapeHtml(h.stake || '')}">${escapeHtml(h.name)}</span>`).join('') +
+    `<span class="nhint">点一下填进「问谁」　名单外的直接打字</span>` +
+    (dead.length
+      ? `<span class="deadgrp"><span class="dl">它封了口</span>` +
+        dead.map(h => `<span class="nchip dead" title="${escapeHtml(h.stake || '')}">✕${escapeHtml(h.name)}</span>`).join('') +
+        `</span>` : '');
+
+  box.querySelectorAll('.nchip:not(.dead)').forEach(el => {
+    el.onclick = () => {
+      const f = $('#who');
+      const cur = f.value.split(/[、,，\s]+/).filter(Boolean);
+      const n = el.dataset.n;
+      f.value = (cur.includes(n) ? cur.filter(x => x !== n) : [...cur, n]).join('、');
+      el.classList.toggle('on');
+      $('#cmd').focus();
+    };
+  });
+}
+
 /* 顶栏按钮上的计数：他问了几句、还剩几个人肯说话 */
 function refreshSheetBtn(){
   $('#btnSheet').textContent = G.board.length
@@ -177,10 +212,11 @@ function refreshSheetBtn(){
 async function sayClaim(){
   const box = $('#cmd');
   const said = box.value.trim();
+  const who = $('#who').value.trim();
   if (!said || G.busy || G.ended || !G.gen) return;
 
   box.value = '';
-  say(said, 'claim', `第 ${G.qi + 1} 句`);
+  say(said, 'claim', who ? `第 ${G.qi + 1} 句　问 ${who}` : `第 ${G.qi + 1} 句　没点名`);
   busy(true, '……');
 
   let r;
@@ -190,7 +226,7 @@ async function sayClaim(){
       cast: G.cast, hook: G.hook, silenced: G.silenced,
       lastRun: lastRunMemory(), board: boardForPrompt(),
       qi: G.qi + 1, trust: G.trust, granted: G.granted,
-    }, said);
+    }, { said, who });
   }catch(err){
     say('（没有回应：' + err.message + '）', 'sys');
     busy(false); return;
@@ -207,25 +243,31 @@ async function sayClaim(){
      代码兜底（凡是已封的 id，一律不许再进证人席）。 */
   await admitNewcomers(r.newcomers);
 
-  /* 他点了谁的名——它自己动的时候就从这些人里抽 */
-  const hit = new Set();
-  for (const a of [...(r.addressed || []), ...(r.blocked || [])]){
-    const h = G.cast.find(c => c.id === a);
-    if (h) hit.add(h.id);
-  }
-  for (const id of hit) G.questioned[id] = (G.questioned[id] || 0) + 1;
-  G.askedCount += hit.size || 1;      // 没点名＝广播，算一次
-
   /* 换个叫法想撬开封过的口，当面驳回 */
   for (const id of (r.blocked || [])){
     const h = G.cast.find(c => c.id === id);
     if (h && G.silenced.includes(id)) say(`「${h.name}」还是不说话。`, 'sys deny');
   }
 
+  /* —— 这一句花掉了多少 ——
+     只有**真答上话的**才计费。撞在封过的口上、或者问了个不存在的东西，
+     一句话也没换来，那就不该扣他额度。 */
+  const answered = (r.voices || [])
+    .map(v => v && v.id)
+    .filter(id => id && G.cast.some(c => c.id === id) && !G.silenced.includes(id));
+  const uniq = [...new Set(answered)];
+  for (const id of uniq) G.questioned[id] = (G.questioned[id] || 0) + 1;
+  const named = (r.addressed || []).length > 0;
+  G.askedCount += uniq.length || (named ? 0 : 1);   // 没点名＝直接问它，算一次
+  if (named && !uniq.length)
+    say('你点的那几个，没一个能答上话——这一句不算数。它自己那一票你还是拿到了。', 'sys');
+
   const claim = String(r.claim || said).trim() || said;
   if (claim !== said) say(claim, 'norm', '记作');
 
-  /* —— 记一行 —— */
+  /* —— 记一行 ——
+     只有被点名的那几个有裁决。没被问到的这一行就是空的——
+     那是他没花在它们身上的机会，本子上要看得出来。 */
   G.qi++;
   const verdicts = {}, lines = {};
   for (const v of (r.voices || [])){
@@ -233,30 +275,31 @@ async function sayClaim(){
     verdicts[v.id] = v.verdict;
     if (v.line && v.line.trim()) lines[v.id] = deId(v.line.trim());
   }
-  for (const id of G.silenced) { verdicts[id] = '不能说'; delete lines[id]; }
+  /* 封过口的，只要他点了名，那一格就是黑的 */
+  for (const id of G.silenced){
+    if (id in verdicts || (r.blocked || []).includes(id)){ verdicts[id] = '不能说'; delete lines[id]; }
+  }
   verdicts['__it__'] = r.it?.verdict || '无关';
-  G.board.push({ claim, said, verdicts, lines, truth: !!r.truth, itSaid: verdicts['__it__'] });
+  G.board.push({ who, claim, said, verdicts, lines, truth: !!r.truth, itSaid: verdicts['__it__'] });
   refreshSheetBtn();
+  renderCastRow();
 
   G.note = r.note || G.note;
   G.history.push(`他说「${claim}」`);
 
   /* —— 谁开口了 ——
-     模型压不住嘴，一轮能让五六个同时说话，读起来是一锅粥。
-     刻度归代码：被点名的先放，然后放跟「它」唱反调的，最多三句。 */
-  const named = Object.fromEntries(G.cast.map(c => [c.id, c.name]));
-  const called = new Set(r.addressed || []);
+     只有被点名的会答，所以一般就两三个。还是留一道闸：跟「它」唱反调的先放。 */
+  const nm = Object.fromEntries(G.cast.map(c => [c.id, c.name]));
   const itV = verdicts['__it__'];
   const spoke = (r.voices || [])
-    .filter(v => v?.line && v.line.trim() && named[v.id] && !G.silenced.includes(v.id))
-    .sort((a, b) => (called.has(b.id) - called.has(a.id))
-                 || ((a.verdict === itV) - (b.verdict === itV)))
+    .filter(v => v?.line && v.line.trim() && nm[v.id] && !G.silenced.includes(v.id))
+    .sort((a, b) => (a.verdict === itV) - (b.verdict === itV))
     .slice(0, 3);
   for (const v of spoke){
     await sleep(280);
     const c = LLM.censor(deId(v.line));
     G.censored += c.count;
-    say(c.html, 'obj', named[v.id]);
+    say(c.html, 'obj', nm[v.id]);
   }
   if (r.it?.line && r.it.line.trim()){
     await sleep(380);
@@ -300,6 +343,8 @@ async function admitNewcomers(list){
     if (G.cast.some(h => h.id === id)) continue;
     /* 代码兜底：封过的口不许换个名字重新开张。模型认人失手也拦得住。 */
     if (G.silenced.some(sid => sid === id)) continue;
+    /* 也兜一道上限：合理性由它判，但判漏了也不能让证人席无限膨胀 */
+    if (G.cast.length >= 9){ say('这一局的人已经够多了。', 'sys'); continue; }
     G.cast.push({
       id, name: n.name, what: n.what || '物', stake: n.stake || '',
       look: n.look || '', mind: n.mind || '', toward: n.toward || '不在乎',
@@ -307,15 +352,17 @@ async function admitNewcomers(list){
     });
     await sleep(200);
     say(`${n.name}　${n.what || ''}　${n.stake || ''}`, 'joined', '进了证人席');
-    refreshSheetBtn();
+    refreshSheetBtn(); renderCastRow();
   }
 }
 
-/* 给模型看的账：它得知道他手上攒了什么 */
+/* 给模型看的账：他问过什么、花在了谁身上、当时谁怎么答的 */
 function boardForPrompt(){
   if (!G.board.length) return '';
   return G.board.slice(-12).map((row, i) => {
-    const cells = G.cast.map(c => `${c.name}:${row.verdicts[c.id] || '—'}`).join('　');
+    const cells = G.cast
+      .filter(c => row.verdicts[c.id])
+      .map(c => `${c.name}:${row.verdicts[c.id]}`).join('　') || '（没点名，只有你答了）';
     return `${i + 1}.「${row.claim}」　${cells}　你:${row.verdicts['__it__'] || '—'}`;
   }).join('\n');
 }
@@ -429,37 +476,23 @@ async function doStir(victim){
 
 /* ================= 摊牌 =================
    一次填完所有题，一次判完。**全部答对才算过**，不分主次。
-   没过不结束这一局：只给一条模糊的接近度，然后它收回注意力一阵子。 */
 
-const COOL_BASE = 60, COOL_STEP = 30;
-function coolLeft(){ return Math.max(0, Math.ceil((G.coolUntil - Date.now()) / 1000)); }
+   没过不罚时间——多题一起判本来就难得多，再让他干等就是双重惩罚，
+   而且计时器跟这一局别的东西不通货。改成**罚提问额度**：
+   摊一次牌等于问了三次，它照样会因此掐掉一张嘴。
+   代价和别的东西用同一种货币付。 */
+
+const SHOWDOWN_COST = 3;
 
 function refreshShowBtn(){
   const b = $('#btnShow');
   if (G.ended){ b.disabled = true; b.textContent = '这一局结束了'; return; }
-  const n = coolLeft();
-  if (n > 0){
-    b.disabled = true;
-    b.textContent = `它不听了　${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
-  } else {
-    b.disabled = !G.gen;
-    b.textContent = G.attempts ? `摊牌（第 ${G.attempts + 1} 次）` : '摊牌';
-  }
+  b.disabled = !G.gen || !G.riddles.length;
+  b.textContent = G.attempts ? `摊牌（第 ${G.attempts + 1} 次）` : '摊牌';
 }
 
-let coolTicking = false;
-setInterval(() => {
-  if (G.ended) return;
-  const n = coolLeft();
-  if (n > 0){ coolTicking = true; refreshShowBtn(); }
-  else if (coolTicking){
-    coolTicking = false; G.coolUntil = 0; refreshShowBtn();
-    say('它又开始听了。', 'sys');
-  }
-}, 1000);
-
 function openShowdown(){
-  if (!G.gen || G.ended || coolLeft() > 0) return;
+  if (!G.gen || G.ended) return;
   $('#showList').innerHTML = G.riddles.map((r, i) =>
     `<div class="qa"><label>${escapeHtml(r.q)}</label>
       <input data-i="${i}" type="text" value="${escapeHtml(G.answers[i] || '')}"
@@ -501,20 +534,21 @@ async function doShowdown(){
 
   if (pass){
     G.ended = true;
-    $('#cmd').disabled = true;
+    $('#cmd').disabled = $('#who').disabled = true;
     refreshShowBtn();
     await sleep(1600);
     reveal(true, v, hit);
     return;
   }
 
-  /* 没过：只给一条模糊的接近度，不说对了几道，更不说是哪几道 */
+  /* 没过：只给一条模糊的接近度，不说对了几道，更不说是哪几道。
+     代价不是等待，是提问额度——摊一次牌等于问了三次。 */
   await sleep(700);
   showTemp(v.closeness | 0);
-  const wait = COOL_BASE + COOL_STEP * (G.attempts - 1);
-  G.coolUntil = Date.now() + wait * 1000;
   refreshShowBtn();
-  say(`不全对。它把注意力收回去了，${wait} 秒内不再听你摊牌。\n这段时间照常——接着问，答案留着，下次直接改。`, 'sys');
+  say(`不全对。你答案留着，随时可以再摊一次、直接改。\n但这一次摊牌花掉了你三次提问——它又往前挪了一步。`, 'sys');
+  G.askedCount += SHOWDOWN_COST;
+  maybeStir();
 }
 
 function showTemp(n){
@@ -533,7 +567,7 @@ async function giveUp(){
   if (G.ended || !G.gen) return;
   $('#showModal').classList.add('hidden');
   G.ended = true;
-  $('#cmd').disabled = true;
+  $('#cmd').disabled = $('#who').disabled = true;
   refreshShowBtn();
   say('你不问了。', 'sys');
   await sleep(900);
@@ -647,7 +681,7 @@ async function newRun(){
 
   Object.assign(G, {
     gen:null, sealed:null, hook:[], scene:{ elements:[] }, cast:[], silenced:[],
-    board:[], qi:0, riddles:[], answers:{}, attempts:0, coolUntil:0,
+    board:[], qi:0, riddles:[], answers:{}, attempts:0,
     note:'', history:[], trust:0, granted:false, stirs:0, stirLog:[],
     questioned:{}, askedCount:0, filter:null, ended:false, censored:0,
   });
@@ -656,7 +690,9 @@ async function newRun(){
   refreshSheetBtn();
   refreshShowBtn();
   $('#placeName').textContent = '正在生成';
-  $('#cmd').disabled = true;
+  $('#castRow').innerHTML = '';
+  $('#who').value = '';
+  $('#cmd').disabled = $('#who').disabled = true;
 
   bootAnim();
   const seed = Math.floor(Math.random() * 1e6) + '-' + Date.now().toString(36);
@@ -709,8 +745,12 @@ async function newRun(){
   await sleep(600);
   if (G.hook.length) say(G.hook.join(''), 'hookline', '它讲了这么一件事');
   await sleep(400);
-  say('随便问。问句、说法、猜测都行，也可以点名：「问账房，那天谁签的字」——\n哪怕那个人不在证人席上。\n\n场上每一个各自回答 是／不是／无关，或者答不上来。它们互相不合，谁都可能骗你。', 'sys');
-  $('#cmd').disabled = false;
+  say('说一句话，**点名要谁回答**：「问账房和遗孀，那天谁签的字」。\n只有你点到的会答 是／不是／无关，或者答不上来——每一句都得决定花在谁身上。\n\n' +
+      '起手就这' + G.cast.length + '个：' + G.cast.map(h => h.name).join('、') +
+      '。剩下的人得你自己问出来——「问那个当晚值夜的」，它会告诉你有没有这个人。\n\n' +
+      '它们互相不合，谁都可能骗你。你点名问得越多，它越可能掐掉其中一张嘴。', 'sys');
+  $('#cmd').disabled = $('#who').disabled = false;
+  renderCastRow();
   $('#cmd').focus();
   console.log('[封存]', G.sealed, '\n[往事]', g.past);
 }
@@ -751,10 +791,13 @@ const DEMO = {
   why_silent:'（自检模式。）', concession:'（自检模式。）', condition:'（自检模式。）',
 };
 
+/* 每一句只有被点名的那几个答——剩下的空着，那是他没花在它们身上的机会。
+   [问的谁, 那句话, {id:裁决}, 它自己的裁决] */
 const DEMO_ROWS = [
-  ['那天夜里上船的不止一个人', '无关','是','无关','是','不能说','不是'],
-  ['他不是自己走下船的',       '不是','是','无关','无关','是','不是'],
-  ['账房那天动过签收簿',       '不能说','是','无关','不是','是','无关'],
+  ['遗孀、账房', '那天夜里上船的不止一个人', { widow:'是', purser:'无关' }, '不是'],
+  ['更夫',       '他不是自己走下船的',       { watch:'是' },                '不是'],
+  ['账房、遗孀、港口', '账房那天动过签收簿',  { purser:'不是', widow:'是', port:'无关' }, '无关'],
+  ['宁远号、更夫', '那条船当晚根本没靠岸',   { ship:'不能说', watch:'不能说' }, '是'],
 ];
 
 function runDemo(){
@@ -763,17 +806,15 @@ function runDemo(){
   G.scene = DEMO.scene; G.cast = DEMO.cast; G.hook = DEMO.hook;
   G.silenced = ['watch'];
   G.questioned = { purser:2, widow:3, watch:1 };
-  DEMO_ROWS.forEach(([claim, ...vs]) => {
-    const verdicts = {}, lines = {};
-    G.cast.forEach((c, j) => { verdicts[c.id] = vs[j] || '无关'; });
-    verdicts['__it__'] = vs[G.cast.length] || '无关';
-    G.board.push({ claim, verdicts, lines, truth:true, itSaid:verdicts['__it__'] });
+  DEMO_ROWS.forEach(([who, claim, vs, itv]) => {
+    const verdicts = Object.assign({}, vs, { __it__: itv });
+    G.board.push({ who, claim, verdicts, lines:{}, truth:true, itSaid:itv });
   });
   G.board[0].lines = { widow:'签收簿上有两个手印，一个是湿的。' };
   G.board[1].lines = { watch:'他的靴子是干的。下过船的人靴子不可能是干的。' };
   G.riddles = [{ q:'那晚下船的为什么多一个人？', sealed:'（自检）' }];
   $('#placeName').textContent = '渲染自检';
-  drawScene(); refreshSheetBtn(); refreshShowBtn();
+  drawScene(); refreshSheetBtn(); refreshShowBtn(); renderCastRow();
   say(DEMO.opening);
   say(DEMO.hook.join(''), 'hookline', '它讲了这么一件事');
   say('图元清单：' + Render.KINDS.join('、') + '\n点右上角「本子」看记录长什么样。', 'sys');
@@ -784,12 +825,13 @@ function runDemo(){
 
 /* ================= 启动 ================= */
 
+/* 全是"点名 + 一句话"的形状——玩家第一眼就得知道要指定问谁 */
+/* 只管「问什么」那一框——「问谁」有自己的提示和下面那排名字 */
 const PLACEHOLDERS = [
-  '随便问——问句、说法、点名都行',
-  '他是自杀的吗',
+  '一句话——问句、说法、猜测都行',
+  '他是自己走下船的吗',
   '那扇门是从里面锁上的',
-  '问账房，那天谁签的字',
-  '当晚船上还有第三个人',
+  '那天夜里不止一个人上过船',
   '你在等的那个人不会来了',
 ];
 
@@ -804,6 +846,9 @@ function init(){
 
   $('#send').onclick = sayClaim;
   $('#cmd').addEventListener('keydown', e => { if (e.key === 'Enter') sayClaim(); });
+  $('#who').addEventListener('keydown', e => { if (e.key === 'Enter') $('#cmd').focus(); });
+  $('#who').addEventListener('keydown', e => { if (e.key === 'Enter') $('#cmd').focus(); });
+  $('#who').addEventListener('keydown', e => { if (e.key === 'Enter') $('#cmd').focus(); });
 
   $('#btnSheet').onclick = openSheet;
   $('#btnShow').onclick = openShowdown;
@@ -847,13 +892,19 @@ function init(){
   else newRun().then(autoPlay);
 }
 
-/* QA 用：?auto=第一句|第二句　开局跑完自动说几句，用来截真实一局的图 */
+/* QA 用：?auto=问谁>说什么|问谁>说什么　开局跑完自动问几句，用来截真实一局的图。
+   「问谁」可以留空（直接写 >说什么）。 */
 async function autoPlay(){
   const m = /[?&]auto=([^&]*)/.exec(location.search);
   if (!m || !G.gen) return;
-  for (const claim of decodeURIComponent(m[1]).split('|')){
-    if (!claim.trim() || G.ended) break;
-    $('#cmd').value = claim.trim();
+  for (const step of decodeURIComponent(m[1]).split('|')){
+    if (G.ended) break;
+    const i = step.indexOf('>');
+    const who  = i >= 0 ? step.slice(0, i).trim() : '';
+    const said = i >= 0 ? step.slice(i + 1).trim() : step.trim();
+    if (!said) continue;
+    $('#who').value = who;
+    $('#cmd').value = said;
     await sayClaim();
     await sleep(1200);
   }

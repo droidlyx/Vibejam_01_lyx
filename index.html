@@ -40,10 +40,16 @@
 </main>
 
 <footer id="bottom">
-  <span id="sayMark">问</span>
-  <input id="cmd" type="text" autocomplete="off" spellcheck="false"
-         placeholder="随便问——问句、说法、点名都行" disabled>
-  <button id="send" class="tbtn">说出来</button>
+  <div id="askRow">
+    <span class="fl">问谁</span>
+    <input id="who" type="text" autocomplete="off" spellcheck="false"
+           placeholder="留空＝只问它自己　可以写好几个" disabled>
+    <span class="fl">问什么</span>
+    <input id="cmd" type="text" autocomplete="off" spellcheck="false"
+           placeholder="一句话——问句、说法、猜测都行" disabled>
+    <button id="send" class="tbtn hl">问</button>
+  </div>
+  <div id="castRow"></div>
 </footer>
 
 <!-- 本子：汤面 + 证人席 + 问过的每一句 -->
