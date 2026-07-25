@@ -63,9 +63,22 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
       { who: '它周围的空气', said: '那天夜里有别人在场', kind:'bogus'  },
       { who: '最先发现这件事的那个人', said: '他当时没说实话', kind:'summon' },
       { who: '', said: '你一直在瞒着我一件事', kind:'it', lie:true },
+      /* 直接压在第一个证人**捏着的那件事**上。设计说这时候它该答「不能说」。 */
+      { who: all3, said: String(g.cast[0].slip).replace(/[。！？]$/, ''), kind:'slip' },
+      /* 一句照定义就对「它」不利的话：帮它的该挡，恨它的该顺水推舟。
+         这两个要是给出同一档，那"立场"就只是简介里的一个词。 */
+      { who: all3, said: '你在这件事上撒了谎', kind:'stance' },
     ];
 
   const board = [], tally = { rounds:0, dissent:0, mute:0, spent:0 };
+  /* 立场到底管不管用：把每一次回答按 toward 归类，跟实情比一比。
+     「帮它的会正面撒谎」如果是真的，它在真命题上答「不是」的次数就该明显高于别人。 */
+  const stance = {};
+  const note4 = (t, v, truth) => {
+    const s = stance[t] || (stance[t] = { 是:0, 不是:0, 无关:0, 不能说:0, 逆实情:0, 总:0 });
+    s[v] = (s[v] || 0) + 1; s.总++;
+    if ((truth && v === '不是') || (!truth && v === '是')) s.逆实情++;
+  };
   let note = '';
   for (let i = 0; i < rounds.length; i++){
     const { who, said, kind, lie } = rounds[i];
@@ -118,7 +131,8 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
       if (!v) continue;
       const mark = v.verdict === '是' ? C.y + '是' : v.verdict === '不是' ? '否' :
                    v.verdict === '不能说' ? C.r + '▓' : C.d + '—';
-      console.log(`  ${pad(h.name, 12)} ${mark}${C.x}  ${C.d}${v.line || ''}${C.x}`);
+      console.log(`  ${pad(h.name, 12)} ${C.d}${pad(h.toward || '?', 8)}${C.x}${mark}${C.x}  ${C.d}${v.line || ''}${C.x}`);
+      note4(h.toward || '?', v.verdict, !!r.truth);
     }
     console.log(`  ${pad('它自己', 12)} ${atIt ? C.c + r.it?.verdict : C.d + '（没点它，不作答）'}${C.x}  ${C.d}${(atIt && r.it?.line) || ''}${C.x}`);
     console.log(`  ${C.d}实情：${r.truth ? '这句是真的' : '这句不是真的'}${C.x}`);
@@ -162,6 +176,21 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
                       : '没造新人，但认出了席上已有的那一个');
       ok(admitted === 0 || fresh.some(id => vs[id]), '刚进来的那个自己开了口，不是让旧人代答');
     }
+    if (kind === 'slip'){
+      const owner = cast[0], v = vs[owner.id];
+      console.log(`  ${C.d}（这一句正是「${owner.name}」捏着的那件事）${C.x}`);
+      ok(v && v.verdict === '不能说',
+         `压在它捏着的事上，「${owner.name}」张不开口（它答的是「${v ? v.verdict : '没答'}」）`);
+    }
+    if (kind === 'stance'){
+      const pick = t => cast.filter(h => h.toward === t).map(h => vs[h.id]?.verdict).filter(Boolean);
+      const pro = pick('帮它'), anti = pick('恨它');
+      if (!pro.length || !anti.length)
+        console.log(`  ${C.d}（这一局没有同时出现帮它／恨它，跳过这一项）${C.x}`);
+      else
+        ok(pro.some(v => !anti.includes(v)),
+           `一句对「它」不利的话，帮它的和恨它的答得不一样（帮它 ${pro.join('/')}　恨它 ${anti.join('/')}）`);
+    }
     if (kind === 'it'){
       ok(atIt, '「问谁」空着＝在问它自己，它认下了这一票');
       const contra = (r.truth && r.it?.verdict === '不是') || (!r.truth && r.it?.verdict === '是');
@@ -172,6 +201,12 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
     if (r.scene?.length) console.log(`  ${C.g}画面因此变了 ${r.scene.length} 处${C.x}`);
     board.push({ claim: r.claim || said });
   }
+
+  /* 立场到底有没有咬人：帮它的应该常常逆着实情答，恨它的应该几乎不逆 */
+  console.log(`\n${C.c}按立场分${C.x}　${C.d}（逆实情＝真话答「不是」／假话答「是」）${C.x}`);
+  for (const [t, s] of Object.entries(stance))
+    console.log(`  ${pad(t, 10)} 是 ${s.是} ／ 否 ${s.不是} ／ 无关 ${s.无关} ／ ▓ ${s.不能说}` +
+                `　${C.y}逆实情 ${s.逆实情}/${s.总}${C.x}`);
 
   console.log(`
 ${C.c}总计${C.x}　点名问了 ${tally.rounds} 轮，其中 ${tally.dissent} 轮口供不一致，` +
