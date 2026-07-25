@@ -51,7 +51,77 @@ const LLM = (() => {
     const data = await res.json();
     const tc = data.choices?.[0]?.message?.tool_calls?.[0];
     if (!tc) throw new Error('响应里没有 tool_call');
-    return JSON.parse(tc.function.arguments);
+    return parseLoose(tc.function.arguments);
+  }
+
+  /* 模型偶尔会吐出不合法的 JSON：字符串里夹裸换行、尾逗号、被 max_tokens 截断。
+     先按原样解析，失败了依次尝试修复，全都不行才抛。 */
+  function parseLoose(raw){
+    try { return JSON.parse(raw); } catch (e0) {
+      const tries = [
+        // 1) 去掉尾逗号
+        s => s.replace(/,\s*([}\]])/g, '$1'),
+        // 2) 转义字符串内部的裸控制字符
+        s => escapeRawControls(s),
+        // 3) 两样都来一遍
+        s => escapeRawControls(s).replace(/,\s*([}\]])/g, '$1'),
+        // 4) 疑似被截断：补齐未闭合的括号
+        s => closeBrackets(escapeRawControls(s)),
+      ];
+      for (const f of tries){
+        try { return JSON.parse(f(raw)); } catch (e) {}
+      }
+      console.error('[JSON 解析失败] 原始输出：', raw);
+      throw new Error('模型输出的 JSON 不合法（' + e0.message.slice(0, 80) + '）');
+    }
+  }
+
+  /* 用字符码判断，避免字面量里再出现反斜杠转义 */
+  function escapeRawControls(s){
+    const MAP = { 10:"\\n", 13:"\\r", 9:"\\t", 8:"\\b", 12:"\\f" };
+    let out = "", inStr = false, esc = false;
+    for (let i = 0; i < s.length; i++){
+      const ch = s[i], code = s.charCodeAt(i);
+      if (esc){ out += ch; esc = false; continue; }
+      if (inStr && code === 92){ out += ch; esc = true; continue; }   // 反斜杠
+      if (code === 34){ inStr = !inStr; out += ch; continue; }        // 引号
+      if (inStr && MAP[code]){ out += MAP[code]; continue; }          // 裸控制字符
+      if (inStr && code < 32) continue;                               // 其余控制字符直接丢
+      out += ch;
+    }
+    return out;
+  }
+
+  function closeBrackets(s){
+    let inStr = false, esc = false;
+    const stack = [];
+    for (let i = 0; i < s.length; i++){
+      const code = s.charCodeAt(i);
+      if (esc){ esc = false; continue; }
+      if (inStr && code === 92){ esc = true; continue; }
+      if (code === 34){ inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (code === 123 || code === 91) stack.push(code);
+      else if (code === 125 || code === 93) stack.pop();
+    }
+    let out = s.replace(/,\s*$/, "");
+    if (inStr) out += "\"";
+    while (stack.length) out += stack.pop() === 123 ? "}" : "]";
+    return out;
+  }
+
+  /* 生成失败就重来——玩家不该为模型的手滑买单 */
+  async function withRetry(label, fn, times = 3){
+    let last;
+    for (let i = 1; i <= times; i++){
+      try { return await fn(i); }
+      catch (e){
+        last = e;
+        console.warn(`[${label}] 第 ${i}/${times} 次失败：${e.message}`);
+        if (i < times) await new Promise(r => setTimeout(r, 400));
+      }
+    }
+    throw last;
   }
 
   /* ================= 开局：它创造这一局 ================= */
@@ -112,13 +182,13 @@ ${PRIMITIVES}`;
   }
 
   async function genesis(seed){
-    const r = await call({
+    const r = await withRetry('genesis', i => call({
       system: genesisSystem(),
-      user: `造一局。这一次的随机种子是 ${seed}，用它让你的选择跟上一次不同——不同的地方、不同的年代、不同的职能、不同的意图。开始。`,
+      user: `造一局。这一次的随机种子是 ${seed}-${i}，用它让你的选择跟上一次不同——不同的地方、不同的年代、不同的职能、不同的意图。开始。`,
       fn: GENESIS_FN,
-      maxTokens: 3000,
+      maxTokens: 3200,
       temperature: 1.15,
-    });
+    }));
     r.scene = { elements: r.scene || [] };
     return r;
   }
@@ -174,7 +244,7 @@ ${CONTRACT}
   }
 
   async function act(g, ctx){
-    return await call({
+    return await withRetry('act', () => call({
       system: actSystem(g),
       user:
 `【画面上现在有什么】
@@ -192,7 +262,7 @@ ${ctx.history.slice(-10).map((h, i) => `${i + 1}. ${h}`).join('\n') || '（刚�
       fn: ACT_FN,
       maxTokens: 1200,
       temperature: 0.95,
-    });
+    }), 2);
   }
 
   /* ================= 结算 ================= */
@@ -213,7 +283,7 @@ ${ctx.history.slice(-10).map((h, i) => `${i + 1}. ${h}`).join('\n') || '（刚�
   };
 
   async function verdict(g, guess, history){
-    return await call({
+    return await withRetry('verdict', () => call({
       system: `${PERSONA}
 
 【这个地方】${g.place}
@@ -249,7 +319,7 @@ ${history.map((h, i) => `${i + 1}. ${h}`).join('\n')}
 判定。`,
       fn: VERDICT_FN,
       maxTokens: 900,
-    });
+    }), 2);
   }
 
   /* ================= 代码层审查 ================= */

@@ -14,3 +14,7 @@ deepseek_apikey
 
 # 本地预填 key
 key.local.js
+
+# 截图与调试产物
+shots/
+diag.html

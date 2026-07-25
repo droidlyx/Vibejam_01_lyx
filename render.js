@@ -18,8 +18,8 @@ const Render = (() => {
       g.appendChild(el('rect', { x:e.x, y:e.y, width:e.w, height:e.h, class:e.dark ? 'p-dk' : 'p-md' }));
       g.appendChild(el('rect', { x:e.x, y:e.y, width:e.w, height:e.h, class:'p-edge' }));
       if (e.legs) {
-        g.appendChild(el('line', { x1:e.x+6, y1:e.y+e.h, x2:e.x+6, y2:410, class:'p-edge' }));
-        g.appendChild(el('line', { x1:e.x+e.w-6, y1:e.y+e.h, x2:e.x+e.w-6, y2:410, class:'p-edge' }));
+        g.appendChild(el('line', { x1:e.x+6, y1:e.y+e.h, x2:e.x+6, y2:445, class:'p-edge' }));
+        g.appendChild(el('line', { x1:e.x+e.w-6, y1:e.y+e.h, x2:e.x+e.w-6, y2:445, class:'p-edge' }));
       }
       return g;
     },
@@ -52,7 +52,7 @@ const Render = (() => {
       g.appendChild(el('rect', { x:e.x, y:e.y, width:e.w, height:e.h, class:'p-dk' }));
       g.appendChild(el('rect', { x:e.x, y:e.y, width:e.w, height:e.h, class:'p-edge' }));
       const on = e.on !== false;
-      g.appendChild(el('rect', { x:e.x+7, y:e.y+7, width:e.w-14, height:e.h-22, fill:on ? (e.tint || '#12211c') : '#0d100f' }));
+      g.appendChild(el('rect', { x:e.x+7, y:e.y+7, width:e.w-14, height:e.h-22, fill:on ? (dim(e.tint, 0.22) || '#12211c') : '#0d100f' }));
       if (on){
         for (let y = e.y + 10; y < e.y + e.h - 18; y += 4)
           g.appendChild(el('line', { x1:e.x+7, y1:y, x2:e.x+e.w-7, y2:y, class:'p-scan' }));
@@ -76,7 +76,7 @@ const Render = (() => {
     window(e){
       const g = el('g');
       g.appendChild(el('rect', { x:e.x, y:e.y, width:e.w, height:e.h, class:'p-dk' }));
-      g.appendChild(el('rect', { x:e.x+8, y:e.y+8, width:e.w-16, height:e.h-16, fill:e.tint || '#1b201f' }));
+      g.appendChild(el('rect', { x:e.x+8, y:e.y+8, width:e.w-16, height:e.h-16, fill:dim(e.tint, 0.20) || '#1b201f' }));
       const seed = (e.x * 31 + e.y * 17) | 0;
       if (e.noise !== false)
         for (let i = 0; i < 40; i++)
@@ -102,9 +102,17 @@ const Render = (() => {
     },
 
     figure(e){                                // 人形剪影
-      const g = el('g'), cx = e.x + e.w / 2, h = e.h;
-      g.appendChild(el('circle', { cx, cy:e.y + h*0.11, r:h*0.10, class:'p-fig' }));
-      g.appendChild(el('path', { d:`M${cx} ${e.y+h*0.22} l${-e.w*0.42} ${h*0.30} l${e.w*0.12} ${h*0.48} l${e.w*0.60} 0 l${e.w*0.12} ${-h*0.48} z`, class:'p-fig' }));
+      const g = el('g'), cx = e.x + e.w / 2, h = e.h, w = e.w;
+      const headR = Math.min(w * 0.26, h * 0.11);
+      const neck = e.y + headR * 2.1;
+      const shoulder = e.y + h * 0.30, hipY = e.y + h;
+      const sw = w * 0.46, hw = w * 0.30;      // 半肩宽 / 半胯宽
+      g.appendChild(el('circle', { cx, cy:e.y + headR, r:headR, class:'p-fig' }));
+      g.appendChild(el('path', {
+        d:`M${cx - w*0.10} ${neck} L${cx + w*0.10} ${neck}` +
+          ` L${cx + sw} ${shoulder} L${cx + hw} ${hipY} L${cx - hw} ${hipY} L${cx - sw} ${shoulder} Z`,
+        class:'p-fig',
+      }));
       if (e.faint) g.setAttribute('opacity', .45);
       return g;
     },
@@ -122,9 +130,11 @@ const Render = (() => {
       return g;
     },
 
-    cable(e){
+    cable(e){                                 // 垂下的线缆：跨度要够宽，下垂量不超过跨度的一半
       const g = el('g');
-      g.appendChild(el('path', { d:`M${e.x} ${e.y} Q${e.x+e.w/2} ${e.y+Math.max(20,e.h)} ${e.x+e.w} ${e.y}`, class:'p-cable' }));
+      const w = Math.max(60, e.w);
+      const sag = Math.min(Math.max(18, e.h), w * 0.5);
+      g.appendChild(el('path', { d:`M${e.x} ${e.y} Q${e.x + w/2} ${e.y + sag * 2} ${e.x + w} ${e.y}`, class:'p-cable' }));
       return g;
     },
 
@@ -160,14 +170,16 @@ const Render = (() => {
     },
 
     debris(e){                                // 散落杂物
-      const g = el('g'), s = (e.x * 19 + e.y * 23) | 0, n = num(e.count, 7);
-      for (let i = 0; i < n; i++)
+      const g = el('g'), s = Math.abs((e.x * 19 + e.y * 23) | 0), n = num(e.count, 7);
+      for (let i = 0; i < n; i++){
+        const w = 4 + ((s + i) % 9), h = 3 + ((s + i * 3) % 5);
+        const x = e.x + ((s + i * 61) % Math.max(1, e.w - w));
+        const y = e.y + ((s + i * 29) % Math.max(1, e.h - h));
         g.appendChild(el('rect', {
-          x: e.x + ((s + i * 61) % Math.max(1, e.w)),
-          y: e.y + ((s + i * 29) % Math.max(1, e.h)),
-          width: 4 + ((s + i) % 9), height: 3 + ((s + i * 3) % 5),
-          class:'p-md', transform:`rotate(${(s + i * 37) % 90} ${e.x} ${e.y})`,
+          x, y, width:w, height:h, class:'p-md',
+          transform:`rotate(${(s + i * 37) % 60 - 30} ${x + w / 2} ${y + h / 2})`,
         }));
+      }
       return g;
     },
 
@@ -178,7 +190,23 @@ const Render = (() => {
     },
   };
 
-  const FLOOR = 410;
+  /* 模型给的 tint 有时亮得炸眼，在这套暗调里会毁掉画面。
+     统一压到亮度上限以下，保留色相。 */
+  function dim(hex, cap){
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex || '').trim());
+    if (!m) return null;
+    let h = m[1];
+    if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    let r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
+    const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
+    if (lum > cap){
+      const k = cap / lum;
+      r = Math.round(r*k); g = Math.round(g*k); b = Math.round(b*k);
+    }
+    return '#' + [r,g,b].map(v => v.toString(16).padStart(2,'0')).join('');
+  }
+
+  const FLOOR = 445;
 
   function draw(svg, scene){
     svg.innerHTML = '';
@@ -210,15 +238,21 @@ const Render = (() => {
     return hs;
   }
 
-  /* 容错：坐标夹进画布，尺寸给下限，字段缺失有默认值 */
+  /* 尺寸软上限：防止某一件东西大到吃掉整幅画。
+     门/管道/窗/涂块本来就可能很大，不限。 */
+  const BIG_OK = new Set(['door', 'pipe', 'window', 'redact']);
+
+  /* 容错：坐标夹进画布，尺寸给上下限，字段缺失有默认值 */
   function normalize(e){
+    const kind = String(e.kind || '').toLowerCase();
     const x = Math.max(0, Math.min(790, num(e.x, 0)));
     const y = Math.max(0, Math.min(490, num(e.y, 0)));
+    const capW = BIG_OK.has(kind) ? 800 : 300;
+    const capH = BIG_OK.has(kind) ? 500 : 220;
     return { ...e,
-      x, y,
-      w: Math.max(4, Math.min(800 - x, num(e.w, 40))),
-      h: Math.max(3, Math.min(500 - y, num(e.h, 40))),
-      kind: String(e.kind || '').toLowerCase(),
+      x, y, kind,
+      w: Math.max(4, Math.min(800 - x, capW, num(e.w, 40))),
+      h: Math.max(3, Math.min(500 - y, capH, num(e.h, 40))),
     };
   }
 

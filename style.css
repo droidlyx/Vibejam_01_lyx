@@ -21,8 +21,8 @@ button,input{font-family:inherit}
 #crt{
   position:fixed;inset:0;pointer-events:none;z-index:900;
   background:
-    repeating-linear-gradient(to bottom,rgba(0,0,0,.22) 0 1px,transparent 1px 3px),
-    radial-gradient(ellipse at center,transparent 50%,rgba(0,0,0,.72) 100%);
+    repeating-linear-gradient(to bottom,rgba(0,0,0,.13) 0 1px,transparent 1px 3px),
+    radial-gradient(ellipse at center,transparent 62%,rgba(0,0,0,.45) 100%);
   mix-blend-mode:multiply;
 }
 #crt.flicker{animation:flick .5s steps(2) 2}
@@ -148,6 +148,8 @@ button,input{font-family:inherit}
 /* 弹窗 */
 .modal{position:fixed;inset:0;z-index:950;background:rgba(3,5,4,.86);display:flex;align-items:center;justify-content:center}
 .modal.hidden,.hidden{display:none}
+/* ID 选择器优先级压过 .hidden，凡是用 ID 声明过 display 的都要单独写一条 */
+#boot.hidden{display:none}
 .modalBox{width:620px;max-width:92vw;max-height:86vh;overflow-y:auto;background:var(--panel);border:1px solid var(--amber-fade);padding:22px 24px}
 .modalBox.wide{width:760px}
 .modalTitle{color:var(--amber);font-family:"Cascadia Mono",monospace;font-size:13px;letter-spacing:.12em;margin-bottom:16px}
@@ -171,19 +173,19 @@ button,input{font-family:inherit}
 .reveal .rt{color:#f0dcb4}
 
 /* ---------- 图元 ---------- */
-.p-dk{fill:#151a19}
-.p-md{fill:#1d2422}
-.p-hi{fill:#2b3431}
-.p-edge{stroke:#39433f;stroke-width:1;fill:none}
-.p-scan{stroke:rgba(0,0,0,.35);stroke-width:1}
-.p-scrtxt{fill:#7fd0a8;font:10px "Cascadia Mono",Consolas,monospace}
-.p-wall{fill:#4a5450;font:13px "Cascadia Mono",Consolas,monospace;letter-spacing:.1em}
-.p-noise{fill:#3c4744}
+.p-dk{fill:#242c2a}
+.p-md{fill:#333d3a}
+.p-hi{fill:#4e5b56}
+.p-edge{stroke:#74847d;stroke-width:1.2;fill:none}
+.p-scan{stroke:rgba(0,0,0,.22);stroke-width:1}
+.p-scrtxt{fill:#9ae4bf;font:10px "Cascadia Mono",Consolas,monospace}
+.p-wall{fill:#7d8b85;font:13px "Cascadia Mono",Consolas,monospace;letter-spacing:.1em}
+.p-noise{fill:#5b6b66}
 .p-heat{stroke:rgba(224,164,74,.35);stroke-width:1.5;fill:none;animation:rise 3s linear infinite}
 @keyframes rise{0%{transform:translateY(6px);opacity:0}30%{opacity:.7}100%{transform:translateY(-14px);opacity:0}}
 .p-fig{fill:#232b28}
-.p-cable{stroke:#2b3431;stroke-width:3;fill:none}
-.p-stain{fill:#101413}
+.p-cable{stroke:#4e5b56;stroke-width:3;fill:none}
+.p-stain{fill:#1b2220}
 .p-redact{fill:#000}
 .p-led-r{fill:#c8492f;animation:pulse 2.4s ease-in-out infinite}
 .p-led-g{fill:#3f9d6e;animation:pulse 2.4s ease-in-out infinite}
