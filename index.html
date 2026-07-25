@@ -54,12 +54,16 @@
     <div class="modalTitle">说出你的判断</div>
     <p class="note" id="guessQ">它想从你这里得到什么？</p>
     <div class="cfgRow">
-      <input id="guessInput" type="text" placeholder="用一句话说出来。说完这一局就结束了。">
+      <input id="guessInput" type="text" placeholder="用一句话说出来">
     </div>
-    <p class="note dim">它在这一局开始之前就把答案写下来了，代码封存着。结算时会原文亮出来。</p>
+    <p class="note dim">它在这一局开始之前就把答案写下来了，代码封存着。<br>
+      猜错不会结束这一局——它会作出反应，你可以接着找。</p>
     <div class="modalFoot">
       <button class="tbtn hl" id="guessGo">说出来</button>
-      <button class="tbtn" data-close>再想想</button>
+      <span style="display:flex;gap:8px">
+        <button class="tbtn" data-close>再想想</button>
+        <button class="tbtn" id="giveUp">放弃，揭晓</button>
+      </span>
     </div>
   </div>
 </div>

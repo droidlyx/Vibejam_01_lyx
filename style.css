@@ -205,3 +205,8 @@ button,input{font-family:inherit}
 .bar{height:6px;background:#151a19;border:1px solid var(--line);margin-top:4px}
 .bar i{display:block;height:100%;background:var(--amber);transition:width .8s}
 #clueList{max-height:44px}
+
+.entry.temp{border-left:2px solid var(--amber-fade);padding-left:11px}
+.entry.temp p{color:var(--amber-dim);font-size:12px;margin-top:4px}
+.entry.temp .bar{margin-top:2px}
+#giveUp:hover{border-color:var(--red);color:var(--red)}

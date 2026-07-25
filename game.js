@@ -16,6 +16,7 @@ const G = {
   history: [],
   note: '',
   acts: [],         // 它做过的事，给玩家看的流水
+  attempts: [],     // 猜过几次
   focus: null,
   busy: false,
   ended: false,
@@ -178,7 +179,7 @@ function describePatch(patch){
 
 async function doGuess(){
   const guess = $('#guessInput').value.trim();
-  if (!guess || G.busy) return;
+  if (!guess || G.busy || G.ended) return;
   $('#guessModal').classList.add('hidden');
   say('› ' + guess, 'sys');
   busy(true, '……');
@@ -191,26 +192,69 @@ async function doGuess(){
     busy(false); return;
   }
   busy(false);
-  G.ended = true;
-  $('#cmd').disabled = true;
+
+  G.attempts.push({ guess, closeness: v.closeness | 0, hit: !!v.hit });
+  G.history.push(`他猜：「${guess}」——${v.hit ? '说中了' : '没说中'}`);
 
   const c = LLM.censor(v.line);
   G.censored += c.count;
   say(c.html, 'it', G.gen.place.slice(0, 12));
 
-  await sleep(1500);
-  reveal(guess, v);
+  if (v.hit){
+    G.ended = true;
+    $('#cmd').disabled = true;
+    await sleep(1600);
+    reveal(guess, v);
+    return;
+  }
+
+  /* 没说中：这一局继续。给一点冷热，别让这次尝试白费。 */
+  await sleep(700);
+  showTemp(v.closeness | 0);
+  $('#btnGuess').textContent = `说出你的判断（第 ${G.attempts.length + 1} 次）`;
+  busy(false);
+}
+
+/* 冷热提示：不给答案，只给方向 */
+function showTemp(n){
+  const label = n >= 75 ? '很近了' : n >= 50 ? '沾到边了' : n >= 25 ? '还差得远' : '完全不在这个方向上';
+  const e = document.createElement('div');
+  e.className = 'entry temp';
+  e.innerHTML = `<div class="src">你的判断</div>
+    <div class="bar"><i style="width:${Math.max(3, Math.min(100, n))}%"></i></div>
+    <p>${label}</p>`;
+  $('#feed').appendChild(e);
+  $('#feed').scrollTop = 1e9;
+}
+
+/* 放弃：直接揭晓，不判定 */
+async function giveUp(){
+  if (G.ended || !G.gen) return;
+  $('#guessModal').classList.add('hidden');
+  G.ended = true;
+  $('#cmd').disabled = true;
+  say('你不再猜了。', 'sys');
+  await sleep(900);
+  reveal(null, { hit:false, closeness:0, internal:'（你没有让它说完。）' });
 }
 
 function reveal(guess, v){
-  $('#endTitle').textContent = v.hit ? '你说中了' : '你没说中';
+  const gaveUp = guess === null;
+  $('#endTitle').textContent = v.hit ? '你说中了' : gaveUp ? '你放弃了' : '你没说中';
+
+  const tries = G.attempts.length
+    ? `<div class="reveal"><div class="rl">你一共猜了 ${G.attempts.length} 次</div>
+        <div class="mono dim" style="white-space:pre-wrap">${
+          G.attempts.map((a, i) => `${i + 1}. ${escapeHtml(a.guess)}　${a.hit ? '✓' : a.closeness}`).join('\n')
+        }</div></div>`
+    : '';
+
   $('#endBody').innerHTML = `
     <div class="reveal"><div class="rl">它在这一局开始之前写下的，封存至今</div>
-      <div class="rt big">${G.sealed}</div></div>
-    <div class="reveal"><div class="rl">你说的</div><div class="rt">${escapeHtml(guess)}</div></div>
-    <div class="reveal"><div class="rl">接近度</div>
-      <div class="bar"><i style="width:${Math.max(0, Math.min(100, v.closeness | 0))}%"></i></div></div>
-    <div class="reveal"><div class="rl">它为什么说不出口</div><div class="rt">${G.gen.why_silent}</div></div>
+      <div class="rt big">${escapeHtml(G.sealed)}</div></div>
+    ${tries}
+    <div class="reveal"><div class="rl">它为什么说不出口</div>
+      <div class="rt">${escapeHtml(G.gen.why_silent)}</div></div>
     <div class="reveal"><div class="rl">它没说出口的</div>
       <div class="rt" style="white-space:pre-wrap">${escapeHtml(v.internal)}</div></div>
     <div class="reveal"><div class="rl">这个地方，和它的往事</div>
@@ -238,20 +282,37 @@ const BOOT_LINES = [
   '正在决定该拿他怎么办',
 ];
 
+let bootStop = false;
+
 async function bootAnim(){
   const b = $('#boot');
+  bootStop = false;
   b.classList.remove('hidden');
   b.innerHTML = '';
   for (const line of BOOT_LINES){
+    if (bootStop) return;
     const d = document.createElement('div');
     d.textContent = line;
     b.appendChild(d);
-    await sleep(line ? 320 + line.length * 22 : 200);
+    await sleep(line ? 300 + line.length * 20 : 200);
   }
-  const d = document.createElement('div');
-  d.className = 'blink';
-  d.textContent = '…';
-  b.appendChild(d);
+  // 自检播完之后继续走秒——生成要二十秒，不能让画面看起来像死了
+  const tail = document.createElement('div');
+  tail.className = 'blink';
+  b.appendChild(tail);
+  const t0 = Date.now();
+  const dots = ['', '.', '..', '...'];
+  let i = 0;
+  while (!bootStop){
+    const s = Math.floor((Date.now() - t0) / 1000);
+    tail.textContent = `正在决定该拿他怎么办${dots[i++ % 4]}　${s}s`;
+    await sleep(420);
+  }
+}
+
+function bootDone(){
+  bootStop = true;
+  $('#boot').classList.add('hidden');
 }
 
 async function newRun(){
@@ -265,45 +326,112 @@ async function newRun(){
 
   Object.assign(G, {
     gen:null, sealed:null, scene:{ elements:[] }, hotspots:{},
-    history:[], note:'', acts:[], focus:null, ended:false, censored:0,
+    history:[], note:'', acts:[], attempts:[], focus:null, ended:false, censored:0,
   });
   $('#feed').innerHTML = '';
   $('#scene').innerHTML = '';
   $('#clueList').innerHTML = '<span class="empty">—</span>';
   $('#objName').textContent = '—';
+  $('#btnGuess').textContent = '说出你的判断';
   $('#placeName').textContent = '正在生成';
   $('#focusTag').classList.add('hidden');
   $('#cmd').disabled = true;
 
-  const anim = bootAnim();
+  bootAnim();
   const seed = Math.floor(Math.random() * 1e6) + '-' + Date.now().toString(36);
 
   let g;
+  const t0 = Date.now();
   try{
-    g = await LLM.genesis(seed);
+    console.log('[genesis] 开始', LLM.cfg.model, LLM.cfg.endpoint);
+    g = await Promise.race([
+      LLM.genesis(seed),
+      sleep(120000).then(() => { throw new Error('超过 120 秒没有响应'); }),
+    ]);
+    console.log(`[genesis] 完成 ${((Date.now()-t0)/1000).toFixed(1)}s`, g);
   }catch(err){
-    $('#boot').classList.add('hidden');
-    say('（生成失败：' + err.message + '）', 'sys');
+    bootDone();
+    console.error('[genesis] 失败', err);
+    say('生成失败：' + err.message, 'sys');
+    say('按右上角「重开一局」再试一次。如果一直失败，打开浏览器控制台（F12）看红色报错，多半是 Key 不对或者网络不通。');
     return;
   }
-  await anim;
-  await sleep(400);
+
+  if (!g.scene?.elements?.length){
+    bootDone();
+    console.warn('[genesis] 没有图元', g);
+    say('它这一局没有画出画面。按「重开一局」再试。', 'sys');
+    return;
+  }
+  await sleep(300);
 
   /* —— 代码唯一的强制力：把它写下的东西封存 —— */
   G.gen = g;
-  G.sealed = g.intent;
-  Object.freeze(G.sealed);
+  G.sealed = String(g.intent);   // 封存：拷贝一份，之后只在结算时读
 
   G.scene = g.scene;
   G.hotspots = Object.fromEntries((g.hotspots || []).map(h => [h.id, h]));
 
-  $('#boot').classList.add('hidden');
+  bootDone();
   $('#placeName').textContent = (g.place || '').split(/[。，,]/)[0].slice(0, 22);
   drawScene();
   say(g.opening);
   $('#cmd').disabled = false;
   $('#cmd').focus();
   console.log('[封存]', G.sealed, '\n[往事]', g.past);
+}
+
+
+/* ================= 渲染自检 =================
+   打开 index.html?demo 直接看图元长什么样，不调 API、不等生成。
+   用来单独验证画面这一层。 */
+
+const DEMO = {
+  place:'渲染自检（未调用模型）',
+  opening:'这不是一局游戏，是把十四种图元一次性摆出来看看。\n点画面上的东西可以观察。想玩真的，去掉网址末尾的 ?demo。',
+  scene:{ elements:[
+    { id:'light1', kind:'light',  x:120, y:24,  w:70,  h:10 },
+    { id:'light2', kind:'light',  x:330, y:24,  w:70,  h:10, on:false },
+    { id:'light3', kind:'light',  x:540, y:24,  w:70,  h:10 },
+    { id:'pipe1',  kind:'pipe',   x:0,   y:64,  w:800, h:16 },
+    { id:'win',    kind:'window', x:56,  y:104, w:150, h:118 },
+    { id:'panel1', kind:'panel',  x:250, y:104, w:132, h:104, text:'T -19.8\nLOCKED' },
+    { id:'vent',   kind:'slats',  x:424, y:110, w:96,  h:34, glow:true },
+    { id:'sign',   kind:'text',   x:424, y:176, w:120, h:18, text:'07-K  禁止入内' },
+    { id:'cab',    kind:'container', x:560, y:104, w:92, h:120 },
+    { id:'block',  kind:'redact', x:672, y:104, w:96,  h:76 },
+    { id:'cbl',    kind:'cable',  x:250, y:216, w:170, h:34 },
+    { id:'desk',   kind:'box',    x:236, y:322, w:240, h:11, legs:true },
+    { id:'crate',  kind:'box',    x:520, y:330, w:96,  h:80, dark:true },
+    { id:'man',    kind:'figure', x:660, y:250, w:60,  h:160, faint:true },
+    { id:'door1',  kind:'door',   x:20,  y:150, w:104, h:260, led:'red' },
+    { id:'stn',    kind:'stain',  x:300, y:392, w:110, h:20 },
+    { id:'junk',   kind:'debris', x:440, y:390, w:60,  h:18, count:9 },
+  ]},
+  hotspots:[
+    { id:'panel1', name:'控制面板', look:'屏幕泛着绿光。温度读数在缓慢漂移。下面一排按键没有任何标识，只有磨损。' },
+    { id:'door1',  name:'铁门',     look:'门把手上凝着冰粒。锁舌的位置被焊了一颗螺栓，从里面封死的。' },
+    { id:'man',    name:'影子',     look:'墙上有一片颜色更深的地方，形状像一个站了很久的人。' },
+    { id:'block',  name:'？',       look:'这一块你看不见。它不让你看。' },
+    { id:'crate',  name:'货箱',     look:'纸箱受过潮，底边发黑，堆放的批号全都一样。' },
+  ],
+  past:'（自检模式，没有往事。）',
+  intent:'（自检模式，没有封存内容。）',
+  why_silent:'（自检模式。）',
+};
+
+function runDemo(){
+  bootDone();
+  G.gen = DEMO;
+  G.sealed = DEMO.intent;
+  G.scene = DEMO.scene;
+  G.hotspots = Object.fromEntries(DEMO.hotspots.map(h => [h.id, h]));
+  $('#placeName').textContent = '渲染自检';
+  drawScene();
+  say(DEMO.opening);
+  say('图元清单：' + Render.KINDS.join('、'), 'sys');
+  $('#cmd').disabled = true;
+  $('#cmd').placeholder = '自检模式不接受输入';
 }
 
 /* ================= 启动 ================= */
@@ -338,6 +466,7 @@ function init(){
     $('#guessInput').focus();
   };
   $('#guessGo').onclick = doGuess;
+  $('#giveUp').onclick = giveUp;
   $('#guessInput').addEventListener('keydown', e => { if (e.key === 'Enter') doGuess(); });
 
   $('#btnNew').onclick = newRun;
@@ -364,7 +493,8 @@ function init(){
     $('#cmd').placeholder = PLACEHOLDERS[pi];
   }, 3500);
 
-  newRun();
+  if (location.search.includes('demo')) runDemo();
+  else newRun();
 }
 
 init();
