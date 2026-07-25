@@ -11,3 +11,6 @@ deepseek_apikey
 
 # local harness config
 .claude/
+
+# 本地预填 key
+key.local.js
