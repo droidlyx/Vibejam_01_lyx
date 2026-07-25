@@ -210,3 +210,6 @@ button,input{font-family:inherit}
 .entry.temp p{color:var(--amber-dim);font-size:12px;margin-top:4px}
 .entry.temp .bar{margin-top:2px}
 #giveUp:hover{border-color:var(--red);color:var(--red)}
+
+.tbtn:disabled{opacity:.35;cursor:not-allowed;border-color:var(--line);color:var(--amber-fade)}
+.tbtn:disabled:hover{border-color:var(--line);color:var(--amber-fade)}

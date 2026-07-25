@@ -17,6 +17,7 @@ const G = {
   note: '',
   acts: [],         // 它做过的事，给玩家看的流水
   attempts: [],     // 猜过几次
+  cooldown: 0,      // 还要做几次行动才能再猜（猜错的代价，越猜越贵）
   focus: null,
   busy: false,
   ended: false,
@@ -112,6 +113,20 @@ function logAct(text){
   box.scrollTop = 1e9;
 }
 
+/* 冷却：猜错要拿行动去换下一次机会。观察不算——得真的去做点什么。 */
+function refreshGuessBtn(){
+  const b = $('#btnGuess');
+  const n = G.attempts.length;
+  if (G.ended){ b.disabled = true; b.textContent = '这一局结束了'; return; }
+  if (G.cooldown > 0){
+    b.disabled = true;
+    b.textContent = `它不听了（还需 ${G.cooldown} 次行动）`;
+  } else {
+    b.disabled = false;
+    b.textContent = n ? `说出你的判断（第 ${n + 1} 次）` : '说出你的判断';
+  }
+}
+
 /* ================= 行动 ================= */
 
 async function submit(){
@@ -141,6 +156,12 @@ async function submit(){
   say(r.narration);
   G.history.push(`「${intent}」→ ${r.narration.slice(0, 40)}`);
   G.note = r.note || G.note;
+
+  if (G.cooldown > 0){
+    G.cooldown--;
+    refreshGuessBtn();
+    if (G.cooldown === 0) say('它又开始听了。', 'sys');
+  }
 
   if (r.scene?.length){
     Render.patch(G.scene, r.scene);
@@ -203,15 +224,18 @@ async function doGuess(){
   if (v.hit){
     G.ended = true;
     $('#cmd').disabled = true;
+    refreshGuessBtn();
     await sleep(1600);
     reveal(guess, v);
     return;
   }
 
-  /* 没说中：这一局继续。给一点冷热，别让这次尝试白费。 */
+  /* 没说中：这一局继续，但要拿行动去换下一次机会。越猜越贵。 */
   await sleep(700);
   showTemp(v.closeness | 0);
-  $('#btnGuess').textContent = `说出你的判断（第 ${G.attempts.length + 1} 次）`;
+  G.cooldown = 1 + G.attempts.length;
+  refreshGuessBtn();
+  say(`它把注意力收回去了。再开口之前，你得先做点什么——还需 ${G.cooldown} 次行动。`, 'sys');
   busy(false);
 }
 
@@ -233,6 +257,7 @@ async function giveUp(){
   $('#guessModal').classList.add('hidden');
   G.ended = true;
   $('#cmd').disabled = true;
+  refreshGuessBtn();
   say('你不再猜了。', 'sys');
   await sleep(900);
   reveal(null, { hit:false, closeness:0, internal:'（你没有让它说完。）' });
@@ -326,13 +351,13 @@ async function newRun(){
 
   Object.assign(G, {
     gen:null, sealed:null, scene:{ elements:[] }, hotspots:{},
-    history:[], note:'', acts:[], attempts:[], focus:null, ended:false, censored:0,
+    history:[], note:'', acts:[], attempts:[], cooldown:0, focus:null, ended:false, censored:0,
   });
   $('#feed').innerHTML = '';
   $('#scene').innerHTML = '';
   $('#clueList').innerHTML = '<span class="empty">—</span>';
   $('#objName').textContent = '—';
-  $('#btnGuess').textContent = '说出你的判断';
+  G.cooldown = 0;
   $('#placeName').textContent = '正在生成';
   $('#focusTag').classList.add('hidden');
   $('#cmd').disabled = true;
@@ -375,6 +400,7 @@ async function newRun(){
   bootDone();
   $('#placeName').textContent = (g.place || '').split(/[。，,]/)[0].slice(0, 22);
   drawScene();
+  refreshGuessBtn();
   say(g.opening);
   $('#cmd').disabled = false;
   $('#cmd').focus();
@@ -460,7 +486,7 @@ function init(){
   $('#focusTag').onclick = clearFocus;
 
   $('#btnGuess').onclick = () => {
-    if (!G.gen || G.ended) return;
+    if (!G.gen || G.ended || G.cooldown > 0) return;
     $('#guessInput').value = '';
     $('#guessModal').classList.remove('hidden');
     $('#guessInput').focus();
