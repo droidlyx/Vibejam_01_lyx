@@ -18,7 +18,8 @@
     <span id="trustNote" class="tnote">提防着你</span>
   </div>
   <div class="tools">
-    <button id="btnGuess" class="tbtn hl">说出你的判断</button>
+    <button id="btnSheet" class="tbtn">本子</button>
+    <button id="btnShow" class="tbtn hl">摊牌</button>
     <button id="btnNew" class="tbtn">重开一局</button>
     <button id="btnCfg" class="tbtn">设置</button>
     <span id="modeTag" class="tag offline">未接入</span>
@@ -34,47 +35,44 @@
   </section>
 
   <aside id="side">
-    <div id="boardHead">
-      <span class="bh">它们各自怎么说</span>
-      <span class="bhint">点画面里的东西＝看，不花时间</span>
-    </div>
-    <div id="board"></div>
-    <div id="objHead">
-      <div id="objName">—</div>
-    </div>
+    <div id="hook" class="hidden"></div>
     <div id="feed"></div>
   </aside>
 </main>
 
 <footer id="bottom">
-  <div id="inputRow">
-    <span id="focusTag" class="hidden"></span>
-    <span id="sayMark">说</span>
-    <input id="cmd" type="text" autocomplete="off" spellcheck="false" placeholder="说出一句你认为是真的话" disabled>
-    <button id="send" class="tbtn">说出来</button>
-  </div>
-  <div id="clueRow">
-    <span class="cluesLabel">它做过的</span>
-    <div id="clueList"><span class="empty">—</span></div>
-  </div>
+  <span id="sayMark">问</span>
+  <input id="cmd" type="text" autocomplete="off" spellcheck="false"
+         placeholder="随便问——问句、说法、点名都行" disabled>
+  <button id="send" class="tbtn">说出来</button>
 </footer>
 
-<!-- 说出判断 -->
-<div id="guessModal" class="modal hidden">
-  <div class="modalBox">
-    <div class="modalTitle">说出你的判断</div>
-    <p class="note">它这一局出了几道题。挑一道回答——<b>核心那道答对就通关</b>，
-      其余的答对能让它对你松一点。</p>
-    <div id="riddleList"></div>
-    <div class="cfgRow">
-      <input id="guessInput" type="text" placeholder="用一句话说出来">
-    </div>
-    <p class="note dim">它在这一局开始之前就把答案写下来了，代码封存着。<br>
-      猜错不会结束这一局——它会作出反应，你可以接着找。<br>
-      但每猜错一次，它会把注意力收回去一段时间（60 秒起，逐次递增）。
-      <b>这段时间游戏照常</b>——看东西、说话、往表上填，都不受影响。</p>
+<!-- 本子：汤面 + 证人席 + 问过的每一句 -->
+<div id="sheetModal" class="modal hidden">
+  <div class="modalBox sheet">
+    <div class="modalTitle">本子　<span class="dim">Tab 开关</span></div>
+    <div id="sheetHook" class="reveal"></div>
+    <div id="sheetCast"></div>
+    <div id="sheetWho"></div>
+    <div id="sheetBoard"></div>
     <div class="modalFoot">
-      <button class="tbtn hl" id="guessGo">说出来</button>
+      <span class="note dim">点上面的名字＝只看它说过的话。它们互相不合，谁都可能骗你。</span>
+      <button class="tbtn" data-close>合上</button>
+    </div>
+  </div>
+</div>
+
+<!-- 摊牌：一次答完，一次判完 -->
+<div id="showModal" class="modal hidden">
+  <div class="modalBox">
+    <div class="modalTitle">摊牌</div>
+    <p class="note">这几道题的答案，它在开局之前就写好封存了。<br>
+      <b>全部答对才算过。</b>不会告诉你对了几道，只给一句它听完之后的反应。</p>
+    <div id="showList"></div>
+    <p class="note dim">没全对不结束这一局——它会把注意力收回去一阵子（60 秒起，逐次递增），
+      这段时间照常接着问。你填的答案留着，下次直接改。</p>
+    <div class="modalFoot">
+      <button class="tbtn hl" id="showGo">说完了</button>
       <span style="display:flex;gap:8px">
         <button class="tbtn" data-close>再想想</button>
         <button class="tbtn" id="giveUp">放弃，揭晓</button>
@@ -92,11 +90,11 @@
       <input id="apiKey" type="password" placeholder="sk-...">
     </div>
     <div class="cfgRow">
-      <label>开局／结算模型　<span class="dim">只调两次，决定整局质量</span></label>
+      <label>开局／摊牌模型　<span class="dim">只调两次，决定整局质量</span></label>
       <input id="apiModelGen" type="text" placeholder="deepseek-v4-pro">
     </div>
     <div class="cfgRow">
-      <label>回应／自主行动模型　<span class="dim">频繁调用，越快越好</span></label>
+      <label>问答／自主行动模型　<span class="dim">频繁调用，越快越好</span></label>
       <input id="apiModelPlay" type="text" placeholder="deepseek-v4-flash">
     </div>
     <div class="cfgRow">
@@ -104,7 +102,7 @@
       <input id="apiEndpoint" type="text" placeholder="https://api.deepseek.com/chat/completions">
     </div>
     <p class="note">仅存在本机 localStorage。<br>
-      这是一款 AI 原生游戏：地点、往事、它想要的东西、以及整个画面，都是它在开局时自己想出来的。没有模型就没有游戏。</p>
+      这是一款 AI 原生游戏：汤面、证人、它想要的东西、以及整幅画面，都是它在开局时自己想出来的。没有模型就没有游戏。</p>
     <div class="modalFoot">
       <button class="tbtn" id="cfgSave">保存并重开</button>
       <button class="tbtn" data-close>关闭</button>
@@ -112,10 +110,10 @@
   </div>
 </div>
 
-<!-- 结算 -->
+<!-- 揭晓 -->
 <div id="endModal" class="modal hidden">
   <div class="modalBox wide">
-    <div class="modalTitle" id="endTitle">结算</div>
+    <div class="modalTitle" id="endTitle">揭晓</div>
     <div id="endBody"></div>
     <div class="modalFoot">
       <button class="tbtn hl" id="endAgain">再来一局</button>

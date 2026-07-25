@@ -8,8 +8,8 @@ const read = f => fs.readFileSync(path.join(root, f), 'utf8');
 
 const box = {};
 new Function('g', read('data.js') + '\n' + read('llm.js') +
-  '\ng.LLM=LLM;g.WITNESS_ID=WITNESS_ID;g.VERDICT_KEYS=VERDICT_KEYS;')(box);
-const { LLM, WITNESS_ID, VERDICT_KEYS } = box;
+  '\ng.LLM=LLM;g.VERDICT_KEYS=VERDICT_KEYS;')(box);
+const { LLM, VERDICT_KEYS } = box;
 LLM.cfg.key = read('deepseek_apikey').trim();
 
 const C = { d:'\x1b[2m', y:'\x1b[33m', g:'\x1b[32m', r:'\x1b[31m', c:'\x1b[36m', x:'\x1b[0m' };
@@ -31,25 +31,25 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
   console.log(`${C.y}【它想要的（封存）】${C.x}${g.intent}\n`);
 
   /* ---------- 证人席 ---------- */
-  console.log(`${C.c}【场上的想法】${C.x}`);
-  for (const h of g.hotspots){
-    const tag = h.witness ? C.g + '见证者' + C.x : pad(h.toward || '?', 8);
-    console.log(`  ${pad(h.name, 12)} ${tag}  ${C.d}${h.mind || ''}${C.x}`);
-    if (h.slip) console.log(`  ${' '.repeat(12)} ${C.d}捏着：${h.slip}${C.x}`);
+  console.log(`${C.c}【汤面】${C.x}${(g.hook || []).join('')}
+`);
+  console.log(`${C.c}【证人席】${C.x}`);
+  for (const h of g.cast){
+    console.log(`  ${pad(h.name, 12)} ${pad(h.what || '?', 4)} ${pad(h.toward || '?', 8)} ${C.d}${h.mind || ''}${C.x}`);
+    console.log(`  ${' '.repeat(12)} ${C.d}利害：${h.stake || ''}｜捏着：${h.slip || ''}${C.x}`);
   }
   console.log();
 
-  const cast = g.hotspots;
-  const drawn = new Set(g.scene.elements.map(e => e.id));
-  ok(cast.length >= 5, `证人 ${cast.length} 件（要 ≥5，含见证者）`);
-  ok(cast.every(h => drawn.has(h.id)), '每一件都真的画在场上了');
-  ok(cast.some(h => h.witness), '见证者在场');
-  ok(cast.filter(h => !h.witness).every(h => h.mind && h.toward && h.slip), '每一件都有想法、立场、和捏着的事');
-  const towards = new Set(cast.filter(h => !h.witness).map(h => h.toward));
+  const cast = g.cast;
+  ok((g.hook||[]).length >= 2 && (g.hook||[]).length <= 5, `汤面 ${(g.hook||[]).length} 句（要 2–5）`);
+  ok((g.hook||[]).join('').length >= 45, `汤面 ${(g.hook||[]).join('').length} 字（要 ≥45，太短就不成故事）`);
+  ok(cast.length >= 5, `证人 ${cast.length} 个（要 ≥5）`);
+  
+  ok(cast.every(h => h.mind && h.toward && h.slip && h.stake), '每一件都有想法、立场、和捏着的事');
+  const towards = new Set(cast.map(h => h.toward));
   ok(towards.size >= 2, `立场有分歧（${[...towards].join('/')}）`);
 
   /* ---------- 一句话，一屋子裁决 ---------- */
-  const ledger = ['他进来了。场上有：' + cast.map(h => h.name).join('、')];
   const board = [];
   const list = claims.length ? claims : [
     '这里出过一件没上报的事',
@@ -64,7 +64,7 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
     console.log(`\n${C.y}第 ${i + 1} 句　「${claim}」${C.x}`);
     const t = Date.now();
     const r = await LLM.ask(g, {
-      scene: g.scene.elements, note, cast, ledger, lastRun: '',
+      scene: g.scene.elements, note, cast, hook: g.hook, silenced: [], lastRun: '',
       board: board.map((b, j) => `${j + 1}.「${b.claim}」`).join('\n'),
       qi: i + 1, trust: 0, granted: false,
     }, claim);
@@ -97,8 +97,6 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
     ok(yes > 0 && no > 0, `有人唱反调（是 ${yes} ／ 否 ${no} ／ 无关 ${na} ／ 不能说 ${mute}）`);
     ok(na >= all.length * 0.25 && na <= all.length * 0.7, `「无关」占 ${Math.round(na / all.length * 100)}%（要 25–70%，它划的是知识边界）`);
     tally.rounds++; tally.dissent += (yes > 0 && no > 0) ? 1 : 0; tally.mute += mute;
-    const w = vs[WITNESS_ID];
-    ok(!w || w.verdict !== '不能说', '见证者没有答「不能说」');
     /* 模型压不住嘴，一轮能让五六件东西同时说话。刻度归代码：
        game.js 只放三句，先放跟「它」唱反调的。这里跑同一套裁剪，
        验的是玩家真会看到什么。 */
@@ -114,7 +112,6 @@ const ok = (b, msg) => console.log((b ? C.g + '  ✓ ' : C.r + '  ✗ ') + msg +
     if (r.scene?.length) console.log(`  ${C.g}画面因此变了 ${r.scene.length} 处${C.x}`);
 
     board.push({ claim });
-    ledger.push(`第 ${i + 1} 句，他说：${claim}`);
   }
 
   console.log(`
